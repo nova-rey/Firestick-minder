@@ -1,0 +1,56 @@
+# Example configuration for firestick-minder.
+#
+# Copy this file to config.yml and edit the values to match your environment.
+#
+# poll_interval_seconds:
+#   How often to poll each Firestick for its state.
+#   5 seconds is a good default; you can lower this (e.g. 2–3) for faster reaction.
+#
+# devices:
+#   List of Fire TV / Firestick devices to manage.
+#
+#   name:
+#     A friendly name for logs (e.g. "livingroom", "bedroom").
+#
+#   host:
+#     The IP address or hostname of the device on your LAN.
+#     firestick-minder will connect to <host>:5555 via adb.
+#
+#   home_packages:
+#     One or more package names that represent the Fire TV home / launcher
+#     on that device. Common values include:
+#       - com.amazon.tv.launcher
+#       - com.amazon.firetv.launcher
+#
+#     To discover the exact package for your device:
+#       1) Go to the Fire TV home screen.
+#       2) From your host, run:
+#            adb connect <FIRESTICK_IP>:5555
+#            adb shell dumpsys window windows | grep mCurrentFocus
+#       3) Look for a line containing the package name.
+#
+#   slideshow_component:
+#     The Activity to launch for your slideshow/screensaver app.
+#     Format: "<package.name>/<ActivityClass>"
+#
+#     To discover:
+#       1) Install the app on the Firestick.
+#       2) adb shell pm list packages
+#       3) adb shell dumpsys package <package> | grep MAIN -A 1
+
+poll_interval_seconds: 5
+
+devices:
+  - name: livingroom
+    host: 192.168.10.101  # <--- REPLACE with your Firestick IP
+    home_packages:
+      - com.amazon.tv.launcher
+      - com.amazon.firetv.launcher
+    slideshow_component: com.example.slideshow/.MainActivity  # <--- REPLACE
+
+  - name: bedroom
+    host: 192.168.10.102  # <--- REPLACE with your Firestick IP
+    home_packages:
+      - com.amazon.tv.launcher
+      - com.amazon.firetv.launcher
+    slideshow_component: com.example.slideshow/.MainActivity

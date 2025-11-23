@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  firestick-minder:
+    image: firestick-minder:0.1.0
+    container_name: firestick-minder
+    restart: unless-stopped
+
+    # Bind-mount the YAML config from the host into the container.
+    # On the host, create ./config.yml (e.g., copy from config.example.yml).
+    volumes:
+      - ./config.yml:/config/config.yml:ro
+
+      # Persist ADB keys so the Firesticks don't prompt for debugging
+      # approval every time the container is recreated.
+      - ./adb-keys:/root/.android
+
+    # By default, Docker bridge networking is sufficient as long as the host
+    # can route to the Firestick IPs on TCP port 5555.
+    # For advanced setups, users may optionally uncomment the following:
+    #
+    # network_mode: "host"
+    #
+    # This makes the container share the host's IP, which can simplify
+    # networking in some homelab environments (Linux only).
