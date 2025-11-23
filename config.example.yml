@@ -6,6 +6,16 @@
 #   How often to poll each Firestick for its state.
 #   5 seconds is a good default; you can lower this (e.g. 2–3) for faster reaction.
 #
+# idle_timeout_seconds (optional):
+#   If set to a positive integer, firestick-minder will also treat "idle in any app"
+#   as a trigger to launch the target app.
+#
+#   When enabled:
+#     - If a device sits in the same non-home, non-target app
+#       with no media playing for at least idle_timeout_seconds,
+#       firestick-minder will launch the configured target app.
+#     - If not set, this idle behavior is disabled; only the home-screen logic runs.
+#
 # devices:
 #   List of Fire TV / Firestick devices to manage.
 #
@@ -27,18 +37,41 @@
 #       2) From your host, run:
 #            adb connect <FIRESTICK_IP>:5555
 #            adb shell dumpsys window windows | grep mCurrentFocus
-#       3) Look for a line containing the package name.
+#       3) Look for a line containing the launcher package name.
 #
 #   slideshow_component:
-#     The Activity to launch for your slideshow/screensaver app.
+#     The Activity to launch for your "idle target" app.
+#     This can be:
+#       - A photo slideshow app,
+#       - A black-screen app,
+#       - Or any other screensaver-style/ambient app you prefer.
+#
 #     Format: "<package.name>/<ActivityClass>"
 #
 #     To discover:
 #       1) Install the app on the Firestick.
 #       2) adb shell pm list packages
 #       3) adb shell dumpsys package <package> | grep MAIN -A 1
+#
+# mqtt (optional):
+#   If present, firestick-minder will publish per-device JSON state over MQTT.
+#
+#   host:
+#     MQTT broker hostname or IP.
+#   port:
+#     Broker port (default 1883).
+#   topic_prefix:
+#     Base MQTT topic under which device state will be published.
+#     Example: "home/firestick" → "home/firestick/<name>/state"
+#   username/password (optional):
+#     Credentials for authenticated brokers.
 
 poll_interval_seconds: 5
+
+# Uncomment and adjust if you want idle behavior beyond the home screen.
+# If omitted, idle timer is disabled and only the home-screen path will
+# auto-launch the target app.
+# idle_timeout_seconds: 300  # 5 minutes
 
 devices:
   - name: livingroom
@@ -54,3 +87,14 @@ devices:
       - com.amazon.tv.launcher
       - com.amazon.firetv.launcher
     slideshow_component: com.example.slideshow/.MainActivity
+
+# Optional MQTT integration.
+# Uncomment and configure if you want firestick-minder to publish state
+# into your smart home via MQTT.
+#
+# mqtt:
+#   host: "192.168.10.50"       # <--- REPLACE with your MQTT broker host
+#   port: 1883
+#   topic_prefix: "home/firestick"
+#   # username: "myuser"
+#   # password: "mypassword"

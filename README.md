@@ -1,14 +1,19 @@
 # firestick-minder
 
-A tiny Python daemon that keeps your Firesticks on a quiet slideshow instead of the Fire TV home screen ads.
+A tiny Python daemon that keeps your Firesticks in an "idle target" app instead of the Fire TV home screen ads.
 
 `firestick-minder` connects to one or more Fire TV / Firestick devices over ADB and checks their state every few seconds:
 
-- If a device is on the **Fire TV home screen**,
-- And **no media is currently playing**, 
-- And it is **not already in your chosen slideshow app**, 
+- If a device is on the **Fire TV home screen**, and
+- **No media is currently playing**, and
+- It is **not already in your chosen idle target app**, 
 
-…then `firestick-minder` automatically launches the slideshow app.
+…then `firestick-minder` automatically launches that idle target app.
+
+Optionally, you can enable:
+
+- An **idle timer** that also treats "sitting in any app doing nothing" as a trigger.
+- **MQTT telemetry**, so your smart home can see and react to Firestick state.
 
 Turn the daemon off, and your Firesticks go back to normal behavior.  
 No rooting, no launcher replacement, no permanent changes.
@@ -20,6 +25,10 @@ No rooting, no launcher replacement, no permanent changes.
 - Supports multiple Firesticks from a single process.
 - Non-destructive: no jailbreak, no system mods.
 - Uses a simple YAML config file (`config.yml`).
+- Optional idle timer:
+  - After N seconds of inactivity in any non-target app (no media playing), launch the target app.
+- Optional MQTT telemetry:
+  - Publishes per-device JSON state to an MQTT broker for smart home integration.
 - Can run:
   - directly on a Linux host (VM, LXC, etc.), or
   - in a Docker container (with optional `docker-compose`).
@@ -39,6 +48,10 @@ Example:
 
 poll_interval_seconds: 5
 
+# Optional: enable idle timer beyond the home screen.
+# If omitted, only the home-screen path will auto-launch the target app.
+# idle_timeout_seconds: 300  # 5 minutes
+
 devices:
   - name: livingroom
     host: 192.168.10.101
@@ -54,10 +67,25 @@ devices:
       - com.amazon.firetv.launcher
     slideshow_component: com.example.slideshow/.MainActivity
 
+# Optional MQTT integration
+# mqtt:
+#   host: "192.168.10.50"
+#   port: 1883
+#   topic_prefix: "home/firestick"
+#   # username: "myuser"
+#   # password: "mypassword"
+```
+
 Fields
 •poll_interval_seconds
 How often to poll each Firestick for its state.
 5 seconds is a good default; you can lower this (e.g. 2–3) for faster reaction.
+•idle_timeout_seconds (optional)
+If set to a positive integer, firestick-minder will also treat idle time inside any non-target, non-home app (with no media playing) as a trigger:
+•If a device sits in the same app with no media playing for at least idle_timeout_seconds,
+•And it is not already in the configured idle target app,
+•firestick-minder will launch the idle target app.
+If this field is omitted, the idle timer is disabled; only the home-screen behavior applies.
 •devices (list)
 Each entry defines one Firestick:
 •name
@@ -82,7 +110,11 @@ mCurrentFocus=Window{... u0 com.amazon.tv.launcher/com.amazon.tv.launcher.ui.Hom
 Use the package name (com.amazon.tv.launcher) in home_packages.
 
 •slideshow_component
-The Activity to launch for your slideshow/screensaver app.
+The Activity to launch for your idle target app. This does not need to be a slideshow; it can be:
+•A photo slideshow app,
+•A black-screen app,
+•A minimalist clock,
+•Any other screensaver-style/ambient app you prefer.
 Format: <package.name>/<ActivityClass>, e.g.:
 
 slideshow_component: com.plexapp.android.screensaver/.MainActivity
@@ -91,91 +123,101 @@ To discover:
 
 adb shell pm list packages
 adb shell dumpsys package <your.package.name> | grep MAIN -A 1
-```
 
----
+
+•mqtt (optional)
+If present, firestick-minder will publish per-device state over MQTT.
+Fields:
+•host – MQTT broker hostname or IP.
+•port – Broker port (default 1883).
+•topic_prefix – Base topic under which device state will be published.
+Example: home/firestick → device state published to home/firestick/<name>/state.
+•username / password (optional) – Credentials for authenticated brokers.
+
+The published payload is JSON, e.g.:
+
+{
+  "name": "livingroom",
+  "host": "192.168.10.101",
+  "foreground_package": "com.amazon.tv.launcher",
+  "media_playing": false,
+  "home_screen": true,
+  "in_target_app": false,
+  "idle_seconds": 12,
+  "idle_timeout_seconds": 300,
+  "last_action": "launched_target_from_home"
+}
+
+
+⸻
 
 Running without Docker (bare Linux / LXC)
 
 Requirements
 •Python 3.7+
 •adb (Android platform-tools)
-•PyYAML (pip install pyyaml)
+•PyYAML
+•paho-mqtt (only used if mqtt is configured, but installed by default in this setup)
 
 Example on Debian/Ubuntu:
 
-```bash
 sudo apt update
 sudo apt install -y python3 android-sdk-platform-tools
-pip install --user pyyaml
-```
+pip install --user pyyaml paho-mqtt
 
 Clone or copy this repo:
 
-```bash
 mkdir -p /opt/firestick-minder
 cd /opt/firestick-minder
 # Place firestick_minder.py, config.example.yml, etc. here
 cp config.example.yml config.yml
 # edit config.yml as needed
-```
 
 Run:
 
-```bash
 python3 firestick_minder.py
-```
 
 To run as a systemd service, create a unit that calls:
 
-```bash
 ExecStart=/usr/bin/python3 /opt/firestick-minder/firestick_minder.py
 WorkingDirectory=/opt/firestick-minder
 Environment=FIRESTICK_MINDER_CONFIG=/opt/firestick-minder/config.yml
-```
 
----
+
+⸻
 
 Running with Docker
 
-### Build the image
+Build the image
 
 From the repo root:
 
-```bash
-docker build -t firestick-minder:0.1.0 .
-```
+docker build -t firestick-minder:0.2.0 .
 
-### Prepare config and ADB keys directory
+Prepare config and ADB keys directory
 
-```bash
 cp config.example.yml config.yml
 mkdir -p adb-keys
-```
 
-Edit config.yml with your real Firestick IPs and app details.
+Edit config.yml with your real Firestick IPs, idle target app, and (optionally) MQTT settings.
 
-### docker run
+docker run
 
-Simple example:
+Example:
 
-```bash
 docker run \
   --name firestick-minder \
   --restart=unless-stopped \
   -d \
   -v "$(pwd)/config.yml:/config/config.yml:ro" \
   -v "$(pwd)/adb-keys:/root/.android" \
-  firestick-minder:0.1.0
-```
+  firestick-minder:0.2.0
 
-### docker-compose
+docker-compose
 
 A docker-compose.yml is provided. From the repo root:
 
-```bash
 docker compose up -d
-```
 
 This will:
 •Run the container as firestick-minder.
@@ -184,13 +226,11 @@ This will:
 
 If your networking setup requires, you can adjust docker-compose.yml to use:
 
-```yaml
 network_mode: "host"
-```
 
 (on Linux hosts) so the container shares the host’s IP.
 
----
+⸻
 
 ADB authorization notes
 
@@ -208,26 +248,38 @@ If firestick_minder.py logs messages about “unauthorized”, that usually mean
 
 In that case, reconnect with:
 
-```bash
 adb connect <FIRESTICK_IP>:5555
-```
 
 and approve the prompt again on the Firestick.
 
----
+⸻
 
 Behavior details
 
-On each poll:
-•If the foreground package is the configured slideshow app → do nothing.
-•If any media session is in state=3 (PLAYING) → do nothing (assume intentional playback).
-•If the foreground package is one of the configured launcher home_packages and no media is playing → launch slideshow.
+On each poll, for each device:
+•foreground_package is read from the Firestick.
+•media_playing is inferred from dumpsys media_session (state=3 = playing).
+•home_screen is true if the foreground package is in home_packages.
+•in_target_app is true if the foreground package matches the target app package.
 
-This gives you a soft “kiosk mode”:
-•Use the Firestick normally for apps and playback.
-•When it drifts back to the Fire TV home screen and idles, firestick-minder nudges it into your slideshow instead of leaving it on an ad-heavy home screen.
+Actions:
+•If home_screen == true, media_playing == false, and in_target_app == false:
+•→ Launch the idle target app (slideshow_component).
+•If idle_timeout_seconds is configured and:
+•Not in the target app, and
+•Not on the home screen, and
+•Not playing media, and
+•The combination of foreground app + media state has been unchanged for at least idle_timeout_seconds:
+•→ Launch the idle target app.
 
----
+After launching the target app, idle tracking is reset for that device.
+
+If MQTT is configured, a JSON state snapshot is published on each poll to:
+
+<mqtt.topic_prefix>/<device.name>/state
+
+
+⸻
 
 Environment variable
 •FIRESTICK_MINDER_CONFIG
@@ -235,21 +287,28 @@ Override the default config path (defaults to ./config.yml on bare metal, and is
 
 Example:
 
-```bash
 FIRESTICK_MINDER_CONFIG=/opt/firestick-minder/my-config.yml python3 firestick_minder.py
-```
 
----
+
+⸻
 
 Roadmap (future ideas)
 
 Potential enhancements:
-•Idle timeout logic from non-home apps (force slideshow after N minutes).
-•Optional MQTT/HTTP status endpoint for integration with home automation.
-•CLI flags for config path, log level, and one-shot diagnostics.
-•Healthcheck endpoint for container orchestrators.
+•Command topics over MQTT (e.g., request specific apps to launch).
+•Idle behavior exceptions (apps that should never be auto-replaced).
+•Home Assistant auto-discovery.
+•Simple HTTP status/health endpoint.
 
-For now, firestick-minder focuses on being small, predictable, and easy to drop into a homelab.
-Edit config.yml, give the container/host network access to your Firesticks, and let it quietly babysit them in the background.
+For now, the focus of v0.2 is optional idle behavior and MQTT telemetry, while keeping the base configuration and behavior simple.
 
 ---
+
+No tests are required for this update. Ensure all four files:
+
+- `firestick_minder.py`
+- `config.example.yml`
+- `Dockerfile`
+- `README.md`
+
+are fully replaced with the provided contents.
