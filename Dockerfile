@@ -6,7 +6,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-RUN pip install --no-cache-dir pyyaml
+RUN pip install --no-cache-dir pyyaml paho-mqtt
 
 # Set working directory
 WORKDIR /app

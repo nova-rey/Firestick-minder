@@ -3,19 +3,22 @@
 firestick-minder
 
 A tiny daemon that watches one or more Fire TV / Firestick devices over ADB.
-If a device is on the Fire TV home screen and not currently playing media,
-firestick-minder automatically launches a specified "slideshow" app
-(e.g., a Plex photo/screensaver app).
+If a device is idle (by policy) and not currently playing media, firestick-minder
+automatically launches a configured "idle target" app (e.g., slideshow, black-screen app,
+or any other screensaver-style app).
 
 Configuration is provided via a YAML file (default: ./config.yml) with:
 - poll_interval_seconds
+- optional idle_timeout_seconds
 - devices: list of {name, host, home_packages, slideshow_component}
+- optional mqtt: host/port/topic_prefix (+ optional username/password)
 
 Non-destructive:
 - No rooting, no custom ROM, no launcher patching.
 - Stop the script/container and your Firesticks go back to normal behavior.
 """
 
+import json
 import os
 import subprocess
 import time
@@ -24,6 +27,11 @@ import sys
 from typing import Dict, Any, List, Optional
 
 import yaml
+
+try:
+    import paho.mqtt.client as mqtt  # type: ignore
+except ImportError:
+    mqtt = None  # MQTT is optional; only used if configured
 
 # ---------------------------------------------------------------------------
 # CONFIG LOADING
@@ -43,11 +51,18 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
 
     Expected schema:
       poll_interval_seconds: int
+      idle_timeout_seconds: int (optional, global)
       devices:
         - name: str
           host: str
           home_packages: [str, ...]
           slideshow_component: str  # "<package>/<Activity>"
+      mqtt:                      # optional
+        host: str
+        port: int
+        topic_prefix: str
+        username: str (optional)
+        password: str (optional)
     """
     config_path = path or os.environ.get(ENV_CONFIG_VAR, DEFAULT_CONFIG_PATH)
 
@@ -65,9 +80,15 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
 
     poll_interval = data.get("poll_interval_seconds", 5)
     devices = data.get("devices", [])
+    idle_timeout = data.get("idle_timeout_seconds", None)
+    mqtt_cfg = data.get("mqtt", None)
 
     if not isinstance(poll_interval, int) or poll_interval <= 0:
         raise ConfigError("poll_interval_seconds must be a positive integer")
+
+    if idle_timeout is not None:
+        if not isinstance(idle_timeout, int) or idle_timeout <= 0:
+            raise ConfigError("idle_timeout_seconds, if set, must be a positive integer")
 
     if not isinstance(devices, list) or not devices:
         raise ConfigError("devices must be a non-empty list")
@@ -103,9 +124,38 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
             }
         )
 
+    # Normalize MQTT config if present.
+    norm_mqtt: Optional[Dict[str, Any]] = None
+    if mqtt_cfg is not None:
+        if not isinstance(mqtt_cfg, dict):
+            raise ConfigError("mqtt section must be a mapping if present")
+
+        host = mqtt_cfg.get("host")
+        port = mqtt_cfg.get("port", 1883)
+        topic_prefix = mqtt_cfg.get("topic_prefix", "home/firestick")
+
+        if not host or not isinstance(host, str):
+            raise ConfigError("mqtt.host must be a non-empty string")
+
+        if not isinstance(port, int) or port <= 0:
+            raise ConfigError("mqtt.port must be a positive integer")
+
+        if not isinstance(topic_prefix, str) or not topic_prefix:
+            raise ConfigError("mqtt.topic_prefix must be a non-empty string")
+
+        norm_mqtt = {
+            "host": host,
+            "port": port,
+            "topic_prefix": topic_prefix.rstrip("/"),
+            "username": mqtt_cfg.get("username"),
+            "password": mqtt_cfg.get("password"),
+        }
+
     return {
         "poll_interval_seconds": poll_interval,
+        "idle_timeout_seconds": idle_timeout,
         "devices": norm_devices,
+        "mqtt": norm_mqtt,
         "config_path": config_path,
     }
 
@@ -260,26 +310,75 @@ def is_media_playing(device: Dict[str, Any]) -> bool:
 
 def launch_slideshow(device: Dict[str, Any]) -> None:
     """
-    Launch the configured slideshow app on this device.
+    Launch the configured idle target app (slideshow/black-screen/etc.) on this device.
     """
     comp = device["slideshow_component"]
-    print(f"[{device['name']}] Launching slideshow app: {comp}")
+    print(f"[{device['name']}] Launching idle target app: {comp}")
     proc = adb(device, "shell", "am", "start", "-n", comp)
     if not proc:
-        print(f"[{device['name']}] Failed to launch slideshow (no adb result).", file=sys.stderr)
+        print(f"[{device['name']}] Failed to launch target app (no adb result).", file=sys.stderr)
         return
 
-    if _check_unauthorized(proc, device["name"], "slideshow launch"):
+    if _check_unauthorized(proc, device["name"], "target app launch"):
         return
 
     if proc.returncode == 0:
-        print(f"[{device['name']}] Slideshow launch command sent.")
+        print(f"[{device['name']}] Target app launch command sent.")
     else:
         print(
-            f"[{device['name']}] Failed to launch slideshow: rc={proc.returncode}, "
+            f"[{device['name']}] Failed to launch target app: rc={proc.returncode}, "
             f"stdout={proc.stdout.strip()}, stderr={proc.stderr.strip()}",
             file=sys.stderr,
         )
+
+
+# ---------------------------------------------------------------------------
+# MQTT SUPPORT (OPTIONAL)
+# ---------------------------------------------------------------------------
+
+class MqttClientWrapper:
+    """
+    Thin wrapper around paho-mqtt so we can treat MQTT as optional.
+    """
+
+    def __init__(self, cfg: Dict[str, Any]):
+        self.cfg = cfg
+        self.client = None
+
+    def connect(self) -> None:
+        if mqtt is None:
+            print("[mqtt] paho-mqtt not installed; MQTT disabled.", file=sys.stderr)
+            return
+
+        self.client = mqtt.Client()
+
+        username = self.cfg.get("username")
+        password = self.cfg.get("password")
+        if username:
+            self.client.username_pw_set(username=username, password=password)
+
+        host = self.cfg["host"]
+        port = self.cfg["port"]
+
+        try:
+            self.client.connect(host, port, keepalive=60)
+            # Use loop_start() to handle reconnects in the background.
+            self.client.loop_start()
+            print(f"[mqtt] Connected to {host}:{port}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[mqtt] Failed to connect to {host}:{port}: {exc}", file=sys.stderr)
+            self.client = None
+
+    def publish_state(self, topic_prefix: str, device_name: str, state: Dict[str, Any]) -> None:
+        if self.client is None:
+            return
+
+        topic = f"{topic_prefix}/{device_name}/state"
+        payload = json.dumps(state, separators=(",", ":"))
+        try:
+            self.client.publish(topic, payload=payload, qos=0, retain=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[mqtt] Failed to publish to {topic}: {exc}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -294,7 +393,10 @@ def main_loop() -> None:
       - Ensure adb connection.
       - Check foreground package.
       - Check whether media is playing.
-      - If on home screen, idle, and not already in slideshow → launch slideshow.
+      - If on home screen, idle, and not already in target app → launch target app.
+      - If idle_timer configured: if app+media state unchanged for >= timeout,
+        and not playing + not in target app → launch target app.
+      - Optionally publish state over MQTT.
     """
     try:
         config = load_config()
@@ -303,15 +405,41 @@ def main_loop() -> None:
         sys.exit(1)
 
     poll_interval = config["poll_interval_seconds"]
+    idle_timeout = config["idle_timeout_seconds"]
     devices = config["devices"]
+    mqtt_cfg = config["mqtt"]
     config_path = config["config_path"]
+
+    idle_enabled = idle_timeout is not None
+    mqtt_enabled = mqtt_cfg is not None
+
+    # Per-device runtime state for idle tracking.
+    # name -> dict with last_foreground, last_media_playing, last_change_ts
+    device_runtime: Dict[str, Dict[str, Any]] = {}
+
+    # MQTT setup
+    mqtt_client_wrapper: Optional[MqttClientWrapper] = None
+    topic_prefix: Optional[str] = None
+    if mqtt_enabled:
+        mqtt_client_wrapper = MqttClientWrapper(mqtt_cfg)
+        mqtt_client_wrapper.connect()
+        topic_prefix = mqtt_cfg["topic_prefix"]
 
     print("firestick-minder starting up...")
     print(f"Using config file: {config_path}")
     print(f"Configured devices: {[d['name'] for d in devices]}")
     print(f"Polling interval: {poll_interval} seconds")
+    if idle_enabled:
+        print(f"Idle timer enabled: {idle_timeout} seconds")
+    else:
+        print("Idle timer disabled (no idle_timeout_seconds configured).")
+    if mqtt_enabled:
+        print(f"MQTT enabled with topic_prefix='{topic_prefix}'")
+    else:
+        print("MQTT disabled (no mqtt section configured).")
 
     while True:
+        loop_started = time.time()
         try:
             for device in devices:
                 name = device.get("name", device.get("host", "unknown"))
@@ -320,6 +448,16 @@ def main_loop() -> None:
                 if not host:
                     print(f"[{name}] Device has no 'host' configured; skipping.", file=sys.stderr)
                     continue
+
+                # Initialize per-device runtime state if needed.
+                rt = device_runtime.setdefault(
+                    name,
+                    {
+                        "last_foreground": None,
+                        "last_media_playing": None,
+                        "last_change_ts": loop_started,
+                    },
+                )
 
                 # Make sure adb can talk to this device.
                 if not ensure_connected(device):
@@ -334,36 +472,85 @@ def main_loop() -> None:
                 slideshow_pkg = slideshow_comp.split("/")[0]
                 home_packages = device.get("home_packages", set())
 
+                home_screen = foreground_pkg in home_packages
+                in_target_app = foreground_pkg == slideshow_pkg
+
+                # Determine idle_time for this device (based on foreground + media state).
+                state_changed = (
+                    foreground_pkg != rt["last_foreground"]
+                    or media_playing != rt["last_media_playing"]
+                )
+                now = loop_started
+                if state_changed:
+                    rt["last_foreground"] = foreground_pkg
+                    rt["last_media_playing"] = media_playing
+                    rt["last_change_ts"] = now
+
+                idle_seconds = max(0, int(now - rt["last_change_ts"]))
+
                 print(
                     f"[tick:{name}] foreground={foreground_pkg!r}, "
                     f"media_playing={media_playing}, "
-                    f"slideshow_pkg={slideshow_pkg!r}"
+                    f"home_screen={home_screen}, "
+                    f"in_target_app={in_target_app}, "
+                    f"idle_seconds={idle_seconds}"
                 )
 
-                # Already in our slideshow app → do nothing.
-                if foreground_pkg == slideshow_pkg:
-                    continue
+                last_action = "none"
 
-                # If any media is playing, assume user/Echo is doing something intentional.
-                if media_playing:
-                    continue
-
-                # If we're on the Fire TV home/launcher, and idle, shove it into slideshow.
-                if foreground_pkg in home_packages:
+                # --- Core behavior: home-screen idle → launch target app ---
+                if home_screen and not media_playing and not in_target_app:
                     launch_slideshow(device)
-                    continue
+                    last_action = "launched_target_from_home"
 
-                # Otherwise: some other app is in foreground and not playing media.
-                # For now, we leave it alone. (You could choose to force slideshow after
-                # a timeout if you ever want more aggressive behavior.)
-                continue
+                    # Reset idle timer baseline after forcing target app.
+                    rt["last_foreground"] = slideshow_pkg
+                    rt["last_media_playing"] = False
+                    rt["last_change_ts"] = now
 
-            time.sleep(poll_interval)
+                # --- Idle timer behavior: optional, more assertive ---
+                elif idle_enabled:
+                    # Conditions to consider "idling in some other app":
+                    # - Not in target app.
+                    # - Not home screen (home is handled above).
+                    # - Not playing media.
+                    if (
+                        not in_target_app
+                        and not home_screen
+                        and not media_playing
+                        and idle_seconds >= idle_timeout
+                    ):
+                        launch_slideshow(device)
+                        last_action = "launched_target_from_idle"
+
+                        rt["last_foreground"] = slideshow_pkg
+                        rt["last_media_playing"] = False
+                        rt["last_change_ts"] = now
+
+                # MQTT telemetry: publish a per-device state snapshot.
+                if mqtt_client_wrapper is not None and topic_prefix is not None:
+                    state_payload = {
+                        "name": name,
+                        "host": host,
+                        "foreground_package": foreground_pkg,
+                        "media_playing": bool(media_playing),
+                        "home_screen": bool(home_screen),
+                        "in_target_app": bool(in_target_app),
+                        "idle_seconds": idle_seconds,
+                        "idle_timeout_seconds": idle_timeout,
+                        "last_action": last_action,
+                    }
+                    mqtt_client_wrapper.publish_state(topic_prefix, name, state_payload)
+
+            # Maintain approximate poll interval.
+            elapsed = time.time() - loop_started
+            sleep_for = max(0.0, poll_interval - elapsed)
+            time.sleep(sleep_for)
 
         except KeyboardInterrupt:
             print("firestick-minder exiting on Ctrl+C")
             break
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # We don't want one unexpected exception to kill the whole daemon.
             print(f"[global] Error in main loop: {exc}", file=sys.stderr)
             time.sleep(poll_interval)
