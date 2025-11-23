@@ -1,0 +1,17 @@
+[Unit]
+Description=firestick-minder - Fire TV home screen slideshow launcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# TODO: update the path below to wherever you place firestick_minder.py
+ExecStart=/usr/bin/python3 /opt/firestick-minder/firestick_minder.py
+Restart=always
+RestartSec=5
+# Optional: set a dedicated user
+# User=firestick
+# Group=firestick
+
+[Install]
+WantedBy=multi-user.target
