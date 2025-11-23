@@ -7,83 +7,108 @@ If a device is on the Fire TV home screen and not currently playing media,
 firestick-minder automatically launches a specified "slideshow" app
 (e.g., a Plex photo/screensaver app).
 
-This script is designed to be edited in-place with your environment:
-
-- Update the DEVICES list with your Firestick IPs and slideshow app components.
-- Adjust POLL_INTERVAL_SECONDS if needed.
-- Deploy as a systemd service on a small VM/LXC in your LAN.
+Configuration is provided via a YAML file (default: ./config.yml) with:
+- poll_interval_seconds
+- devices: list of {name, host, home_packages, slideshow_component}
 
 Non-destructive:
 - No rooting, no custom ROM, no launcher patching.
-- Stop the script/service and your Firesticks go back to normal behavior.
+- Stop the script/container and your Firesticks go back to normal behavior.
 """
 
+import os
 import subprocess
 import time
 import re
 import sys
 from typing import Dict, Any, List, Optional
 
+import yaml
+
 # ---------------------------------------------------------------------------
-# CONFIGURATION
+# CONFIG LOADING
 # ---------------------------------------------------------------------------
 
-# How often to poll each Firestick for its current status.
-# 5 seconds is a good default; you can lower this to 2–3 if you want faster reaction.
-POLL_INTERVAL_SECONDS: int = 5
+DEFAULT_CONFIG_PATH = "./config.yml"
+ENV_CONFIG_VAR = "FIRESTICK_MINDER_CONFIG"
 
-# Devices configuration.
-# Replace the example entries below with your actual Firestick IPs and slideshow app info.
-#
-# Each entry should look like:
-# {
-#     "name": "livingroom",
-#     "host": "192.168.10.101",  # <--- PUT YOUR FIRESTICK IP HERE
-#
-#     # Packages that represent the Fire TV "home" / launcher on this device.
-#     # Usually one of:
-#     #   - "com.amazon.tv.launcher"
-#     #   - "com.amazon.firetv.launcher"
-#     #   - Sometimes additional system UI packages, if needed.
-#     "home_packages": {
-#         "com.amazon.tv.launcher",
-#         "com.amazon.firetv.launcher",
-#     },
-#
-#     # The Activity we want to auto-launch when the device is idle on the home screen.
-#     # Format: "<package.name>/<activity.class>"
-#     # Example (FAKE): "com.example.slideshow/.MainActivity"
-#     # To find this for your real app:
-#     #   1) Install the app on the Firestick.
-#     #   2) Run: adb shell pm list packages
-#     #   3) Find the package, then:
-#     #      adb shell dumpsys package com.example.slideshow | grep MAIN -A 1
-#     "slideshow_component": "com.example.slideshow/.MainActivity",  # <--- PUT YOUR APP HERE
-# }
-#
-# Add one entry per Firestick.
 
-DEVICES: List[Dict[str, Any]] = [
-    {
-        "name": "livingroom",            # <--- FRIENDLY NAME (for logs only)
-        "host": "192.168.10.101",        # <--- EXAMPLE IP - REPLACE WITH YOUR FIRESTICK IP
-        "home_packages": {
-            "com.amazon.tv.launcher",    # <--- REPLACE/CONFIRM BASED ON YOUR DEVICE
-            "com.amazon.firetv.launcher"
-        },
-        "slideshow_component": "com.example.slideshow/.MainActivity",  # <--- REPLACE
-    },
-    {
-        "name": "bedroom",
-        "host": "192.168.10.102",        # <--- ANOTHER EXAMPLE IP
-        "home_packages": {
-            "com.amazon.tv.launcher",
-            "com.amazon.firetv.launcher"
-        },
-        "slideshow_component": "com.example.slideshow/.MainActivity",
-    },
-    # Add more devices here as needed.
-]
+class ConfigError(Exception):
+    """Raised for configuration-related issues."""
+
+
+def load_config(path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Load YAML configuration from the given path.
+
+    Expected schema:
+      poll_interval_seconds: int
+      devices:
+        - name: str
+          host: str
+          home_packages: [str, ...]
+          slideshow_component: str  # "<package>/<Activity>"
+    """
+    config_path = path or os.environ.get(ENV_CONFIG_VAR, DEFAULT_CONFIG_PATH)
+
+    if not os.path.exists(config_path):
+        raise ConfigError(f"Config file not found: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        try:
+            data = yaml.safe_load(f) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"Failed to parse YAML config: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ConfigError("Top-level YAML config must be a mapping")
+
+    poll_interval = data.get("poll_interval_seconds", 5)
+    devices = data.get("devices", [])
+
+    if not isinstance(poll_interval, int) or poll_interval <= 0:
+        raise ConfigError("poll_interval_seconds must be a positive integer")
+
+    if not isinstance(devices, list) or not devices:
+        raise ConfigError("devices must be a non-empty list")
+
+    # Normalize devices: ensure required keys exist and types are correct.
+    norm_devices: List[Dict[str, Any]] = []
+    for idx, dev in enumerate(devices):
+        if not isinstance(dev, dict):
+            raise ConfigError(f"Device entry at index {idx} must be a mapping")
+
+        name = dev.get("name") or f"device_{idx}"
+        host = dev.get("host")
+        home_packages = dev.get("home_packages", [])
+        slideshow_component = dev.get("slideshow_component")
+
+        if not host or not isinstance(host, (str, int)):
+            raise ConfigError(f"Device {name!r} is missing a valid 'host' field")
+
+        if not slideshow_component or not isinstance(slideshow_component, str):
+            raise ConfigError(f"Device {name!r} is missing 'slideshow_component'")
+
+        if not isinstance(home_packages, list) or not home_packages:
+            raise ConfigError(
+                f"Device {name!r} must have a non-empty 'home_packages' list"
+            )
+
+        norm_devices.append(
+            {
+                "name": str(name),
+                "host": str(host),
+                "home_packages": set(map(str, home_packages)),
+                "slideshow_component": slideshow_component,
+            }
+        )
+
+    return {
+        "poll_interval_seconds": poll_interval,
+        "devices": norm_devices,
+        "config_path": config_path,
+    }
+
 
 # ---------------------------------------------------------------------------
 # ADB HELPERS
@@ -128,8 +153,7 @@ def ensure_connected(device: Dict[str, Any]) -> bool:
         return False
 
     if proc.returncode == 0 and proc.stdout.strip() in ("device", "unknown", "offline"):
-        # NOTE: "unknown"/"offline" can still include "unauthorized" cases.
-        # We'll detect unauthorized in the individual adb() calls.
+        # "unknown"/"offline" may still include unauthorized; that is handled later.
         return True
 
     # If we get here, try an explicit adb connect.
@@ -155,6 +179,24 @@ def ensure_connected(device: Dict[str, Any]) -> bool:
     return False
 
 
+def _check_unauthorized(proc: subprocess.CompletedProcess, device_name: str, context: str) -> bool:
+    """
+    Check adb output for "unauthorized" and log a hint if found.
+
+    Returns True if unauthorized was detected.
+    """
+    combined = (proc.stdout or "") + (proc.stderr or "")
+    if "unauthorized" in combined.lower():
+        print(
+            f"[{device_name}] ADB reported 'unauthorized' during {context}. "
+            f"Check the Firestick for an 'Allow USB debugging' prompt and accept it "
+            f"(preferably with 'Always allow from this computer' checked).",
+            file=sys.stderr,
+        )
+        return True
+    return False
+
+
 def get_foreground_package(device: Dict[str, Any]) -> Optional[str]:
     """
     Try to determine which package currently has focus on the Firestick.
@@ -166,13 +208,7 @@ def get_foreground_package(device: Dict[str, Any]) -> Optional[str]:
     if not proc:
         return None
 
-    # If the device is "unauthorized", adb will say so in stderr/stdout.
-    if "unauthorized" in (proc.stdout + proc.stderr).lower():
-        print(
-            f"[{device['name']}] ADB reported 'unauthorized'. "
-            f"Check the Firestick screen for a 'Allow USB debugging' prompt and accept it.",
-            file=sys.stderr,
-        )
+    if _check_unauthorized(proc, device["name"], "window dump"):
         return None
 
     if proc.returncode != 0:
@@ -188,18 +224,13 @@ def get_foreground_package(device: Dict[str, Any]) -> Optional[str]:
 
     # Fallback: activity dump
     proc2 = adb(device, "shell", "dumpsys", "activity", "activities")
-    if proc2 and proc2.returncode == 0:
-        if "unauthorized" in (proc2.stdout + proc2.stderr).lower():
-            print(
-                f"[{device['name']}] ADB reported 'unauthorized' in activity dump. "
-                f"Approve debugging on the Firestick.",
-                file=sys.stderr,
-            )
+    if proc2:
+        if _check_unauthorized(proc2, device["name"], "activity dump"):
             return None
-
-        m2 = re.search(r"mResumedActivity: .*? ([^/]+)/", proc2.stdout)
-        if m2:
-            return m2.group(1)
+        if proc2.returncode == 0:
+            m2 = re.search(r"mResumedActivity: .*? ([^/]+)/", proc2.stdout)
+            if m2:
+                return m2.group(1)
 
     return None
 
@@ -215,12 +246,7 @@ def is_media_playing(device: Dict[str, Any]) -> bool:
     if not proc:
         return False
 
-    if "unauthorized" in (proc.stdout + proc.stderr).lower():
-        print(
-            f"[{device['name']}] ADB reported 'unauthorized' in media_session. "
-            f"Approve debugging on the Firestick.",
-            file=sys.stderr,
-        )
+    if _check_unauthorized(proc, device["name"], "media_session dump"):
         return False
 
     if proc.returncode != 0:
@@ -243,12 +269,7 @@ def launch_slideshow(device: Dict[str, Any]) -> None:
         print(f"[{device['name']}] Failed to launch slideshow (no adb result).", file=sys.stderr)
         return
 
-    if "unauthorized" in (proc.stdout + proc.stderr).lower():
-        print(
-            f"[{device['name']}] ADB reported 'unauthorized' when launching slideshow. "
-            f"Approve debugging on the Firestick.",
-            file=sys.stderr,
-        )
+    if _check_unauthorized(proc, device["name"], "slideshow launch"):
         return
 
     if proc.returncode == 0:
@@ -275,13 +296,24 @@ def main_loop() -> None:
       - Check whether media is playing.
       - If on home screen, idle, and not already in slideshow → launch slideshow.
     """
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"[startup] Config error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    poll_interval = config["poll_interval_seconds"]
+    devices = config["devices"]
+    config_path = config["config_path"]
+
     print("firestick-minder starting up...")
-    print(f"Configured devices: {[d['name'] for d in DEVICES]}")
-    print(f"Polling interval: {POLL_INTERVAL_SECONDS} seconds")
+    print(f"Using config file: {config_path}")
+    print(f"Configured devices: {[d['name'] for d in devices]}")
+    print(f"Polling interval: {poll_interval} seconds")
 
     while True:
         try:
-            for device in DEVICES:
+            for device in devices:
                 name = device.get("name", device.get("host", "unknown"))
                 host = device.get("host")
 
@@ -326,7 +358,7 @@ def main_loop() -> None:
                 # a timeout if you ever want more aggressive behavior.)
                 continue
 
-            time.sleep(POLL_INTERVAL_SECONDS)
+            time.sleep(poll_interval)
 
         except KeyboardInterrupt:
             print("firestick-minder exiting on Ctrl+C")
@@ -334,7 +366,7 @@ def main_loop() -> None:
         except Exception as exc:
             # We don't want one unexpected exception to kill the whole daemon.
             print(f"[global] Error in main loop: {exc}", file=sys.stderr)
-            time.sleep(POLL_INTERVAL_SECONDS)
+            time.sleep(poll_interval)
 
 
 if __name__ == "__main__":

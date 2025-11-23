@@ -1,152 +1,255 @@
 # firestick-minder
 
-> A tiny Python daemon that keeps your Firesticks on a quiet slideshow instead of the Fire TV home screen ads.
-
-## What it does
+A tiny Python daemon that keeps your Firesticks on a quiet slideshow instead of the Fire TV home screen ads.
 
 `firestick-minder` connects to one or more Fire TV / Firestick devices over ADB and checks their state every few seconds:
 
 - If a device is on the **Fire TV home screen**,
-- And **no media is currently playing**,
-- And it is **not already in your chosen slideshow app**,
+- And **no media is currently playing**, 
+- And it is **not already in your chosen slideshow app**, 
 
 …then `firestick-minder` automatically launches the slideshow app.
 
-Turn the daemon off, and your Firesticks go back to normal behavior. No rooting, no launcher replacement, no permanent changes.
+Turn the daemon off, and your Firesticks go back to normal behavior.  
+No rooting, no launcher replacement, no permanent changes.
 
-## Requirements
+---
 
-- A small Linux host (VM, LXC, etc.) on your LAN
-- Python 3.7+
-- `adb` (Android platform-tools)
-- Fire TV / Firestick devices with:
-  - Developer Options enabled
-  - ADB Debugging enabled
-  - ADB over network allowed
-  - A stable IP address (DHCP reservation recommended)
+## Features
 
-## Install
+- Supports multiple Firesticks from a single process.
+- Non-destructive: no jailbreak, no system mods.
+- Uses a simple YAML config file (`config.yml`).
+- Can run:
+  - directly on a Linux host (VM, LXC, etc.), or
+  - in a Docker container (with optional `docker-compose`).
 
-Example install on Debian/Ubuntu:
+---
+
+## Configuration (`config.yml`)
+
+Configuration is provided via a YAML file. A template is included as `config.example.yml`.
+
+Copy it to `config.yml` and edit:
 
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-venv python3-pip android-sdk-platform-tools
+cp config.example.yml config.yml
 
-Clone this repo (or copy the files):
+Example:
 
-sudo mkdir -p /opt/firestick-minder
-sudo chown "$(whoami)" /opt/firestick-minder
-cd /opt/firestick-minder
+poll_interval_seconds: 5
 
-# Copy firestick_minder.py into this directory
+devices:
+  - name: livingroom
+    host: 192.168.10.101
+    home_packages:
+      - com.amazon.tv.launcher
+      - com.amazon.firetv.launcher
+    slideshow_component: com.example.slideshow/.MainActivity
 
-Make it executable:
+  - name: bedroom
+    host: 192.168.10.102
+    home_packages:
+      - com.amazon.tv.launcher
+      - com.amazon.firetv.launcher
+    slideshow_component: com.example.slideshow/.MainActivity
 
-chmod +x firestick_minder.py
-
-Configure
-
-Open firestick_minder.py and edit the DEVICES list:
-
-DEVICES = [
-    {
-        "name": "livingroom",
-        "host": "192.168.10.101",  # <--- REPLACE with your Firestick IP
-        "home_packages": {
-            "com.amazon.tv.launcher",
-            "com.amazon.firetv.launcher",
-        },
-        "slideshow_component": "com.example.slideshow/.MainActivity",  # <--- REPLACE
-    },
-    # Add more devices as needed...
-]
-
-1. Find your Firestick IP
-
-From your router/OPNsense, or directly on the Fire TV network settings.
-
-2. Confirm the launcher package
-
-On the Firestick home screen, run from your host:
+Fields
+•poll_interval_seconds
+How often to poll each Firestick for its state.
+5 seconds is a good default; you can lower this (e.g. 2–3) for faster reaction.
+•devices (list)
+Each entry defines one Firestick:
+•name
+Friendly name for logs ("livingroom", "bedroom", etc.).
+•host
+IP or hostname of the Firestick on your LAN.
+firestick-minder connects to <host>:5555 via adb.
+•home_packages
+One or more package names that represent the Fire TV home / launcher on that device.
+Common values:
+•com.amazon.tv.launcher
+•com.amazon.firetv.launcher
+To discover the launcher package:
 
 adb connect <FIRESTICK_IP>:5555
 adb shell dumpsys window windows | grep mCurrentFocus
 
-Look for something like:
+Look for a line containing something like:
 
 mCurrentFocus=Window{... u0 com.amazon.tv.launcher/com.amazon.tv.launcher.ui.HomeActivity}
 
-Use that package name (com.amazon.tv.launcher) in home_packages.
+Use the package name (com.amazon.tv.launcher) in home_packages.
 
-3. Find your slideshow app component
+•slideshow_component
+The Activity to launch for your slideshow/screensaver app.
+Format: <package.name>/<ActivityClass>, e.g.:
 
-Install your slideshow/screensaver app on the Firestick, then:
+slideshow_component: com.plexapp.android.screensaver/.MainActivity
+
+To discover:
 
 adb shell pm list packages
 adb shell dumpsys package <your.package.name> | grep MAIN -A 1
+```
 
-Use the package/.ActivityName line as your slideshow_component, e.g.:
+---
 
-"slideshow_component": "com.plexapp.android.screensaver/.MainActivity",
+Running without Docker (bare Linux / LXC)
 
-4. Poll interval
+Requirements
+•Python 3.7+
+•adb (Android platform-tools)
+•PyYAML (pip install pyyaml)
 
-By default, firestick-minder polls every 5 seconds:
+Example on Debian/Ubuntu:
 
-POLL_INTERVAL_SECONDS: int = 5
+```bash
+sudo apt update
+sudo apt install -y python3 android-sdk-platform-tools
+pip install --user pyyaml
+```
 
-You can reduce this (e.g. to 3) for faster reaction at the cost of slightly more ADB chatter.
+Clone or copy this repo:
 
-Run as a service (systemd)
+```bash
+mkdir -p /opt/firestick-minder
+cd /opt/firestick-minder
+# Place firestick_minder.py, config.example.yml, etc. here
+cp config.example.yml config.yml
+# edit config.yml as needed
+```
 
-Copy the example service file:
+Run:
 
-sudo mkdir -p /etc/systemd/system
-sudo cp systemd/firestick-minder.service /etc/systemd/system/firestick-minder.service
+```bash
+python3 firestick_minder.py
+```
 
-Edit the ExecStart line in the service file to match the actual path to firestick_minder.py.
+To run as a systemd service, create a unit that calls:
 
-Then:
+```bash
+ExecStart=/usr/bin/python3 /opt/firestick-minder/firestick_minder.py
+WorkingDirectory=/opt/firestick-minder
+Environment=FIRESTICK_MINDER_CONFIG=/opt/firestick-minder/config.yml
+```
 
-sudo systemctl daemon-reload
-sudo systemctl enable firestick-minder.service
-sudo systemctl start firestick-minder.service
+---
 
-Check status:
+Running with Docker
 
-systemctl status firestick-minder.service
-journalctl -u firestick-minder.service -f
+### Build the image
 
-Behavior
-	•	If any media is playing (state=3 from dumpsys media_session), firestick-minder does not interfere.
-	•	If the foreground app is the slideshow app, it does nothing.
-	•	If the foreground app is one of the configured Fire TV launcher packages and no media is playing, it launches the slideshow.
+From the repo root:
 
-This gives you a soft “kiosk mode”:
-	•	Use the Firestick normally.
-	•	When it falls back to the home screen and idles, firestick-minder moves it into a photo slideshow instead of leaving it as an ad billboard.
+```bash
+docker build -t firestick-minder:0.1.0 .
+```
+
+### Prepare config and ADB keys directory
+
+```bash
+cp config.example.yml config.yml
+mkdir -p adb-keys
+```
+
+Edit config.yml with your real Firestick IPs and app details.
+
+### docker run
+
+Simple example:
+
+```bash
+docker run \
+  --name firestick-minder \
+  --restart=unless-stopped \
+  -d \
+  -v "$(pwd)/config.yml:/config/config.yml:ro" \
+  -v "$(pwd)/adb-keys:/root/.android" \
+  firestick-minder:0.1.0
+```
+
+### docker-compose
+
+A docker-compose.yml is provided. From the repo root:
+
+```bash
+docker compose up -d
+```
+
+This will:
+•Run the container as firestick-minder.
+•Mount ./config.yml into /config/config.yml in the container.
+•Persist ADB keys under ./adb-keys so you don’t get new debugging prompts after every container recreation.
+
+If your networking setup requires, you can adjust docker-compose.yml to use:
+
+```yaml
+network_mode: "host"
+```
+
+(on Linux hosts) so the container shares the host’s IP.
+
+---
 
 ADB authorization notes
 
-The first time you connect from the host running firestick-minder, the Firestick will show an “Allow USB debugging?” prompt.
+The first time firestick-minder connects from a given host/container, each Firestick will show an “Allow USB debugging?” prompt.
 
-Make sure to:
-	•	Check “Always allow from this computer”
-	•	Select OK
+On each Firestick:
+1.Make sure ADB debugging is enabled.
+2.When prompted:
+•Check “Always allow from this computer”
+•Select OK
 
 If firestick_minder.py logs messages about “unauthorized”, that usually means:
-	•	The ADB trust was reset (system update, factory reset, etc.), or
-	•	You rebuilt/moved the host and the ADB key changed.
+•The ADB trust was reset (system update, factory reset, etc.), or
+•You rebuilt/moved the host and the ADB key changed (e.g., cleared ./adb-keys).
 
-In that case, reconnect with adb connect and approve the prompt again on the Firestick.
+In that case, reconnect with:
+
+```bash
+adb connect <FIRESTICK_IP>:5555
+```
+
+and approve the prompt again on the Firestick.
+
+---
+
+Behavior details
+
+On each poll:
+•If the foreground package is the configured slideshow app → do nothing.
+•If any media session is in state=3 (PLAYING) → do nothing (assume intentional playback).
+•If the foreground package is one of the configured launcher home_packages and no media is playing → launch slideshow.
+
+This gives you a soft “kiosk mode”:
+•Use the Firestick normally for apps and playback.
+•When it drifts back to the Fire TV home screen and idles, firestick-minder nudges it into your slideshow instead of leaving it on an ad-heavy home screen.
+
+---
+
+Environment variable
+•FIRESTICK_MINDER_CONFIG
+Override the default config path (defaults to ./config.yml on bare metal, and is set to /config/config.yml inside the Docker image).
+
+Example:
+
+```bash
+FIRESTICK_MINDER_CONFIG=/opt/firestick-minder/my-config.yml python3 firestick_minder.py
+```
+
+---
 
 Roadmap (future ideas)
-	•	Optional external config file (YAML/JSON).
-	•	Idle timeout logic (force slideshow even from other apps after N minutes).
-	•	MQTT/HTTP status endpoint for integration with home automation.
-	•	Per-app rules (e.g., ignore certain apps, treat others as “idle”).
 
-For now, firestick-minder is intentionally tiny and simple: a single Python file, a small config block, and a systemd service.
+Potential enhancements:
+•Idle timeout logic from non-home apps (force slideshow after N minutes).
+•Optional MQTT/HTTP status endpoint for integration with home automation.
+•CLI flags for config path, log level, and one-shot diagnostics.
+•Healthcheck endpoint for container orchestrators.
+
+For now, firestick-minder focuses on being small, predictable, and easy to drop into a homelab.
+Edit config.yml, give the container/host network access to your Firesticks, and let it quietly babysit them in the background.
 
 ---
