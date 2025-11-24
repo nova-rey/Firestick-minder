@@ -28,7 +28,8 @@ import subprocess
 import time
 import re
 import sys
-from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Any, List, Optional, Tuple
 
 from config import ConfigError, load_config
 
@@ -247,6 +248,48 @@ def launch_slideshow(device: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# IDLE FSM
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IdleState:
+    idle_seconds: float = 0.0
+
+
+def update_idle_state(
+    *,
+    state: IdleState,
+    home_screen: bool,
+    in_target_app: bool,
+    media_playing: bool,
+    poll_interval: float,
+    timeout: Optional[float],
+) -> Tuple[IdleState, bool, bool]:
+    """
+    Advance the per-device idle FSM and decide whether to launch the idle app.
+
+    Returns a tuple of (state, should_launch, idle_eligible).
+    """
+
+    idle_eligible = home_screen and not media_playing and not in_target_app
+
+    if idle_eligible:
+        state.idle_seconds += poll_interval
+    else:
+        state.idle_seconds = 0
+
+    effective_timeout = 0 if timeout is None else timeout
+
+    should_launch = idle_eligible and state.idle_seconds >= effective_timeout and not in_target_app
+
+    if should_launch:
+        state.idle_seconds = 0
+
+    return state, should_launch, idle_eligible
+
+
+# ---------------------------------------------------------------------------
 # MQTT SUPPORT (OPTIONAL)
 # ---------------------------------------------------------------------------
 
@@ -333,8 +376,7 @@ def main_loop() -> None:
     mqtt_enabled = mqtt_cfg is not None
 
     # Per-device runtime state for idle tracking.
-    # name -> dict with last_foreground, last_media_playing, last_change_ts
-    device_runtime: Dict[str, Dict[str, Any]] = {}
+    device_runtime: Dict[str, IdleState] = {}
 
     # MQTT setup
     mqtt_client_wrapper: Optional[MqttClientWrapper] = None
@@ -396,14 +438,7 @@ def main_loop() -> None:
                     continue
 
                 # Initialize per-device runtime state if needed.
-                rt = device_runtime.setdefault(
-                    name,
-                    {
-                        "last_foreground": None,
-                        "last_media_playing": None,
-                        "last_change_ts": loop_started,
-                    },
-                )
+                idle_state = device_runtime.setdefault(name, IdleState())
 
                 # Make sure adb can talk to this device.
                 if not ensure_connected(device):
@@ -421,57 +456,30 @@ def main_loop() -> None:
                 home_screen = foreground_pkg in home_packages
                 in_target_app = foreground_pkg == slideshow_pkg
 
-                # Determine idle_time for this device (based on foreground + media state).
-                state_changed = (
-                    foreground_pkg != rt["last_foreground"]
-                    or media_playing != rt["last_media_playing"]
+                idle_state, should_launch, idle_eligible = update_idle_state(
+                    state=idle_state,
+                    home_screen=home_screen,
+                    in_target_app=in_target_app,
+                    media_playing=media_playing,
+                    poll_interval=poll_interval,
+                    timeout=idle_timeout if idle_enabled else None,
                 )
-                now = loop_started
-                if state_changed:
-                    rt["last_foreground"] = foreground_pkg
-                    rt["last_media_playing"] = media_playing
-                    rt["last_change_ts"] = now
-
-                idle_seconds = max(0, int(now - rt["last_change_ts"]))
 
                 print(
                     f"[tick:{name}] foreground={foreground_pkg!r}, "
                     f"media_playing={media_playing}, "
                     f"home_screen={home_screen}, "
                     f"in_target_app={in_target_app}, "
-                    f"idle_seconds={idle_seconds}"
+                    f"idle_eligible={idle_eligible}, "
+                    f"idle_seconds={idle_state.idle_seconds}, "
+                    f"idle_timeout={idle_timeout}"
                 )
 
                 last_action = "none"
 
-                # --- Core behavior: home-screen idle → launch target app ---
-                if home_screen and not media_playing and not in_target_app:
+                if should_launch:
                     launch_slideshow(device)
-                    last_action = "launched_target_from_home"
-
-                    # Reset idle timer baseline after forcing target app.
-                    rt["last_foreground"] = slideshow_pkg
-                    rt["last_media_playing"] = False
-                    rt["last_change_ts"] = now
-
-                # --- Idle timer behavior: optional, more assertive ---
-                elif idle_enabled:
-                    # Conditions to consider "idling in some other app":
-                    # - Not in target app.
-                    # - Not home screen (home is handled above).
-                    # - Not playing media.
-                    if (
-                        not in_target_app
-                        and not home_screen
-                        and not media_playing
-                        and idle_seconds >= idle_timeout
-                    ):
-                        launch_slideshow(device)
-                        last_action = "launched_target_from_idle"
-
-                        rt["last_foreground"] = slideshow_pkg
-                        rt["last_media_playing"] = False
-                        rt["last_change_ts"] = now
+                    last_action = "launched_target_from_idle"
 
                 # MQTT telemetry: publish a per-device state snapshot.
                 if mqtt_client_wrapper is not None and topic_prefix is not None:
@@ -482,7 +490,8 @@ def main_loop() -> None:
                         "media_playing": bool(media_playing),
                         "home_screen": bool(home_screen),
                         "in_target_app": bool(in_target_app),
-                        "idle_seconds": idle_seconds,
+                        "idle_eligible": bool(idle_eligible),
+                        "idle_seconds": idle_state.idle_seconds,
                         "idle_timeout_seconds": idle_timeout,
                         "last_action": last_action,
                     }
