@@ -362,3 +362,26 @@ No tests are required for this update. Ensure all four files:
 - `README.md`
 
 are fully replaced with the provided contents.
+
+## Releases & Docker Images
+
+This project publishes Docker images to Docker Hub from GitHub Actions.
+
+When a tag matching `v*.*.*` is pushed (for example `v0.3.0`), GitHub Actions
+builds the image and publishes it to:
+
+- `novarey4200/firestick-minder:0.3.0`
+- `novarey4200/firestick-minder:latest`
+
+To cut a new release locally:
+
+1. Update the version in the project as needed.
+2. Commit your changes.
+3. Create and push a tag:
+
+   ```bash
+   git tag v0.3.0
+   git push origin v0.3.0
+   ```
+
+Within a few minutes, the new image will be available on Docker Hub.
