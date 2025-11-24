@@ -42,14 +42,38 @@ No rooting, no launcher replacement, no permanent changes.
 Firestick-Minder can run with environment variables only; no `config.yml` is required.
 If you don’t set `FIRESTICK_MINDER_CONFIG`, the daemon starts in env-only mode.
 
-Key environment variables:
-- `RUNNER_DEVICE_1_IP`
-- `RUNNER_DEVICE_1_IDLE_APP`
-- `RUNNER_DEVICE_1_IDLE_TIMEOUT`
-- `RUNNER_POLL_SECONDS`
+**Quick single-line setup (legacy shorthand):**
 
-Add more devices by incrementing the index (e.g., `RUNNER_DEVICE_2_IP`).
-Legacy `FSM_*` environment variables remain supported as aliases.
+```bash
+# minimum env for a single Fire TV
+RUNNER_DEVICES="LR=192.168.30.51"
+RUNNER_POLL_SECONDS=5
+FSM_IDLE_TIMEOUT=10
+MINDER_APP=com.snapwood.nfolio
+```
+
+The legacy string supports optional per-device ports:
+
+```bash
+RUNNER_DEVICES="LR=192.168.30.51:5555,BR=192.168.30.52"
+```
+
+**Per-device environment variables (recommended):**
+
+```bash
+FIRESTICK_MINDER_DEVICE_LR_HOST=192.168.30.51
+FIRESTICK_MINDER_DEVICE_LR_APP=com.snapwood.nfolio
+# optional if not 5555:
+FIRESTICK_MINDER_DEVICE_LR_ADB_PORT=5555
+
+RUNNER_POLL_SECONDS=5
+FSM_IDLE_TIMEOUT=10
+```
+
+Any `FIRESTICK_MINDER_DEVICE_<NAME>_HOST` entry creates a device. If both
+the structured form and `RUNNER_DEVICES` are set, the structured form wins.
+Set `MINDER_APP` to provide a default idle app for devices that don’t specify
+`<NAME>_APP`.
 
 ### Optional YAML config
 
@@ -175,7 +199,7 @@ otherwise defaults are used. Env-only setups are fully supported.
 
 | Variable(s)                         | Description                                      |
 |-------------------------------------|--------------------------------------------------|
-| RUNNER_APP                          | Package name of the idle app to launch           |
+| MINDER_APP / RUNNER_APP             | Package or component of the idle app to launch   |
 | RUNNER_POLL_SECONDS / FSM_POLL_INTERVAL | Poll interval (seconds)                     |
 | RUNNER_IDLE_TIMEOUT / FSM_IDLE_TIMEOUT | Idle timeout (seconds)                      |
 | FSM_MQTT_ENABLED                    | true/false                                       |
@@ -186,41 +210,48 @@ otherwise defaults are used. Env-only setups are fully supported.
 
 ### Device Variables
 
-Devices are indexed:
+Structured environment variables are recommended going forward:
 
 ```
-RUNNER_DEVICE_1_IP=192.168.3.50
-RUNNER_DEVICE_1_NAME=livingroom
-RUNNER_DEVICE_1_IDLE_APP=com.example.slideshow
+FIRESTICK_MINDER_DEVICE_<NAME>_HOST=192.168.3.50
+FIRESTICK_MINDER_DEVICE_<NAME>_APP=com.example.slideshow
+# optional
+FIRESTICK_MINDER_DEVICE_<NAME>_ADB_PORT=5555
 ```
 
-To add more devices, increment:
+Legacy shorthand remains supported for quick setups:
 
 ```
-RUNNER_DEVICE_2_IP=192.168.3.51
-RUNNER_DEVICE_2_NAME=bedroom
-RUNNER_DEVICE_2_IDLE_APP=com.example.black
+RUNNER_DEVICES="LR=192.168.30.51,BR=192.168.30.52:5555"
 ```
 
-Legacy `FSM_DEVICE_*` variables remain supported as aliases.
+If both are present, `FIRESTICK_MINDER_DEVICE_*` takes precedence and startup
+logs will note that legacy values were ignored.
 
-### Example Portainer Environment Block
+### Precedence rules
+
+1. If `FIRESTICK_MINDER_CONFIG` points to a readable YAML file, those values
+   load first.
+2. `FIRESTICK_MINDER_DEVICE_*` environment variables override YAML devices.
+3. If no structured env devices are found, legacy `RUNNER_DEVICES` is used as a
+   fallback.
+4. If no devices are found anywhere, the container exits with a clear error
+   pointing to the required environment variables.
+
+### Example Portainer / Docker Environment Block
 
 ```
 RUNNER_POLL_SECONDS=5
-RUNNER_DEVICE_1_IDLE_TIMEOUT=300
-FSM_MQTT_ENABLED=false
-RUNNER_APP=com.example.slideshow/.MainActivity
-RUNNER_DEVICE_1_IP=192.168.3.50
-RUNNER_DEVICE_1_NAME=livingroom
-RUNNER_DEVICE_1_IDLE_APP=com.example.slideshow
+FSM_IDLE_TIMEOUT=300
+MINDER_APP=com.example.slideshow/.MainActivity
+RUNNER_DEVICES=LR=192.168.3.50
+# or structured per-device variables
+# FIRESTICK_MINDER_DEVICE_LR_HOST=192.168.3.50
+# FIRESTICK_MINDER_DEVICE_LR_APP=com.example.slideshow/.MainActivity
 ```
 
-RUNNER_APP overrides any app value defined in config.yml. If
-RUNNER_APP is not set, the value from YAML is used instead (if present),
-and if neither is provided the current default behavior is preserved.
-
-Environment variables take precedence over YAML.
+Environment variables take precedence over YAML, and the container will exit
+with a clear error if no devices are configured via YAML or env vars.
 
 
 ⸻
