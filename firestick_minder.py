@@ -7,7 +7,8 @@ If a device is idle (by policy) and not currently playing media, firestick-minde
 automatically launches a configured "idle target" app (e.g., slideshow, black-screen app,
 or any other screensaver-style app).
 
-Configuration is provided via a YAML file (default: ./config.yml) with:
+Configuration is provided via environment variables, with an optional YAML file
+for overrides when desired. YAML fields include:
 - poll_interval_seconds
 - optional idle_timeout_seconds
 - devices: list of {name, host, home_packages, slideshow_component}
