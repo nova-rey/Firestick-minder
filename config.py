@@ -1,11 +1,15 @@
+import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-DEFAULT_CONFIG_PATH = "./config.yml"
 ENV_CONFIG_VAR = "FIRESTICK_MINDER_CONFIG"
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigError(Exception):
@@ -91,24 +95,28 @@ def _normalize_mqtt(mqtt_cfg: Dict[str, Any]) -> Dict[str, Any]:
 def load_env_devices() -> List[Dict[str, Any]]:
     """Build a list of device configs from indexed environment variables."""
 
-    pattern = re.compile(r"^FSM_DEVICE_(\d+)_([A-Z_]+)$")
+    pattern_fsm = re.compile(r"^FSM_DEVICE_(\d+)_([A-Z_]+)$")
+    pattern_runner = re.compile(r"^RUNNER_DEVICE_(\d+)_([A-Z_]+)$")
     devices_raw: Dict[int, Dict[str, str]] = {}
 
-    for key, value in os.environ.items():
-        match = pattern.match(key)
-        if not match:
-            continue
-
-        idx = int(match.group(1))
-        field = match.group(2)
+    def _apply_device_field(idx: int, field: str, value: str) -> None:
         devices_raw.setdefault(idx, {})
-
-        if field == "HOST":
+        if field in {"HOST", "IP"}:
             devices_raw[idx]["host"] = value
         elif field == "NAME":
             devices_raw[idx]["name"] = value
         elif field == "IDLE_APP":
             devices_raw[idx]["slideshow_component"] = value
+
+    for key, value in os.environ.items():
+        match = pattern_fsm.match(key)
+        if match:
+            _apply_device_field(int(match.group(1)), match.group(2), value)
+            continue
+
+        runner_match = pattern_runner.match(key)
+        if runner_match:
+            _apply_device_field(int(runner_match.group(1)), runner_match.group(2), value)
 
     devices: List[Dict[str, Any]] = []
     for idx in sorted(devices_raw):
@@ -128,28 +136,86 @@ def load_env_devices() -> List[Dict[str, Any]]:
     return devices
 
 
+def _first_runner_device_idle_timeout() -> Tuple[Optional[str], str]:
+    pattern = re.compile(r"^RUNNER_DEVICE_(\d+)_IDLE_TIMEOUT$")
+    first_match: Optional[int] = None
+    first_value: Optional[str] = None
+
+    for key, value in os.environ.items():
+        match = pattern.match(key)
+        if not match:
+            continue
+
+        idx = int(match.group(1))
+        if first_match is None or idx < first_match:
+            first_match = idx
+            first_value = value
+
+    if first_match is None:
+        return None, "FSM_IDLE_TIMEOUT"
+
+    return first_value, f"RUNNER_DEVICE_{first_match}_IDLE_TIMEOUT"
+
+
 def load_config(path: Optional[str] = None) -> Dict[str, Any]:
-    """Load configuration from YAML and environment variables (env has precedence)."""
+    """
+    Load configuration from optional YAML file plus environment.
+    If FIRESTICK_MINDER_CONFIG is unset, missing, or points to a directory,
+    we fall back to env-only mode instead of raising.
+    """
 
-    config_path = path or os.environ.get(ENV_CONFIG_VAR, DEFAULT_CONFIG_PATH)
-    yaml_config: Dict[str, Any] = {}
-    yaml_loaded = False
+    config_path_env = path or os.getenv(ENV_CONFIG_VAR)
 
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as f:
-            try:
-                yaml_config = yaml.safe_load(f) or {}
-            except yaml.YAMLError as exc:
-                raise ConfigError(f"Failed to parse YAML config: {exc}") from exc
+    if not config_path_env:
+        logger.info("No FIRESTICK_MINDER_CONFIG set; using env-only configuration")
+        return build_config_from_env_only()
 
-        if not isinstance(yaml_config, dict):
-            raise ConfigError("Top-level YAML config must be a mapping")
-        yaml_loaded = True
-    else:
-        print(
-            f"[config] Config file not found at {config_path}; continuing with env variables only."
+    config_path = Path(config_path_env)
+
+    if config_path.is_dir():
+        logger.warning(
+            "Config path %s is a directory; ignoring YAML and using env-only configuration",
+            config_path,
         )
+        return build_config_from_env_only()
 
+    if not config_path.exists():
+        logger.warning(
+            "Config file %s not found; using env-only configuration",
+            config_path,
+        )
+        return build_config_from_env_only()
+
+    if not config_path.is_file():
+        raise ConfigError(f"Config path {config_path} is not a regular file")
+
+    yaml_config: Dict[str, Any] = {}
+    with config_path.open("r", encoding="utf-8") as f:
+        try:
+            yaml_config = yaml.safe_load(f) or {}
+        except yaml.YAMLError as exc:
+            raise ConfigError(f"Failed to parse YAML config: {exc}") from exc
+
+    if not isinstance(yaml_config, dict):
+        raise ConfigError("Top-level YAML config must be a mapping")
+
+    return build_config_from_yaml_and_env(yaml_config, config_path)
+
+
+def build_config_from_env_only() -> Dict[str, Any]:
+    return _build_config({}, yaml_loaded=False, config_path=None)
+
+
+def build_config_from_yaml_and_env(
+    yaml_config: Dict[str, Any], config_path: Optional[Path] = None
+) -> Dict[str, Any]:
+    return _build_config(yaml_config, yaml_loaded=True, config_path=config_path)
+
+
+def _build_config(
+    yaml_config: Dict[str, Any], yaml_loaded: bool, config_path: Optional[Path]
+) -> Dict[str, Any]:
+    """Build the configuration object from YAML and environment data."""
     env_devices = load_env_devices()
     env_overrides_used = False
 
@@ -181,7 +247,14 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         if not isinstance(poll_interval, int) or poll_interval <= 0:
             raise ConfigError("poll_interval_seconds must be a positive integer")
         sources["poll_interval_seconds"] = "yaml"
-    env_poll_interval = _parse_int_env(os.environ.get("FSM_POLL_INTERVAL"), "FSM_POLL_INTERVAL")
+    env_poll_interval_value = os.environ.get("FSM_POLL_INTERVAL")
+    poll_interval_var_name = "FSM_POLL_INTERVAL"
+    if env_poll_interval_value is None:
+        env_poll_interval_value = os.environ.get("RUNNER_POLL_SECONDS")
+        if env_poll_interval_value is not None:
+            poll_interval_var_name = "RUNNER_POLL_SECONDS"
+
+    env_poll_interval = _parse_int_env(env_poll_interval_value, poll_interval_var_name)
     if env_poll_interval is not None:
         poll_interval = env_poll_interval
         env_overrides_used = True
@@ -199,9 +272,17 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
                     "idle_timeout_seconds, if set, must be a positive integer"
                 )
             sources["idle_timeout_seconds"] = "yaml"
-    env_idle_timeout = os.environ.get("FSM_IDLE_TIMEOUT")
-    if env_idle_timeout is not None:
-        idle_timeout_parsed = _parse_int_env(env_idle_timeout, "FSM_IDLE_TIMEOUT")
+    env_idle_timeout_value = os.environ.get("FSM_IDLE_TIMEOUT")
+    idle_timeout_var_name = "FSM_IDLE_TIMEOUT"
+    if env_idle_timeout_value is None:
+        env_idle_timeout_value = os.environ.get("RUNNER_IDLE_TIMEOUT")
+        if env_idle_timeout_value is not None:
+            idle_timeout_var_name = "RUNNER_IDLE_TIMEOUT"
+    if env_idle_timeout_value is None:
+        env_idle_timeout_value, idle_timeout_var_name = _first_runner_device_idle_timeout()
+
+    if env_idle_timeout_value is not None:
+        idle_timeout_parsed = _parse_int_env(env_idle_timeout_value, idle_timeout_var_name)
         idle_timeout = idle_timeout_parsed
         env_overrides_used = True
         sources["idle_timeout_seconds"] = "env"
@@ -309,7 +390,7 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         "idle_timeout_seconds": idle_timeout,
         "devices": devices,
         "mqtt": mqtt_cfg,
-        "config_path": config_path if yaml_loaded else None,
+        "config_path": str(config_path) if yaml_loaded and config_path else None,
         "sources": sources,
         "env_devices_count": len(env_devices),
         "env_present": env_present,

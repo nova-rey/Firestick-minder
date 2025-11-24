@@ -24,7 +24,7 @@ No rooting, no launcher replacement, no permanent changes.
 
 - Supports multiple Firesticks from a single process.
 - Non-destructive: no jailbreak, no system mods.
-- Uses a simple YAML config file (`config.yml`).
+- Configurable via environment variables (YAML optional for overrides).
 - Optional idle timer:
   - After N seconds of inactivity in any non-target app (no media playing), launch the target app.
 - Optional MQTT telemetry:
@@ -35,9 +35,25 @@ No rooting, no launcher replacement, no permanent changes.
 
 ---
 
-## Configuration (`config.yml`)
+## Configuration
 
-Configuration is provided via a YAML file. A template is included as `config.example.yml`.
+### Env-only quickstart
+
+Firestick-Minder can run with environment variables only; no `config.yml` is required.
+If you don’t set `FIRESTICK_MINDER_CONFIG`, the daemon starts in env-only mode.
+
+Key environment variables:
+- `RUNNER_DEVICE_1_IP`
+- `RUNNER_DEVICE_1_IDLE_APP`
+- `RUNNER_DEVICE_1_IDLE_TIMEOUT`
+- `RUNNER_POLL_SECONDS`
+
+Add more devices by incrementing the index (e.g., `RUNNER_DEVICE_2_IP`).
+Legacy `FSM_*` environment variables remain supported as aliases.
+
+### Optional YAML config
+
+Configuration can also be provided via a YAML file. A template is included as `config.example.yml`.
 
 Copy it to `config.yml` and edit:
 
@@ -151,56 +167,53 @@ The published payload is JSON, e.g.:
 
 ## Configuration via Environment Variables
 
-firestick-minder now supports configuration using environment variables.
-Environment variables override values in `config.yml`. If an env var is not
-provided, the value falls back to YAML. Env-only setups are fully supported.
-
-> Note: The Docker image bundles the `config.py` loader module. If you prefer
-> to configure Firestick-Minder entirely via environment variables, you can
-> leave `FIRESTICK_MINDER_CONFIG` unset and the daemon will start without a
-> YAML file.
+firestick-minder supports configuration using environment variables. If an env
+var is not provided, the value falls back to YAML when a YAML file is present;
+otherwise defaults are used. Env-only setups are fully supported.
 
 ### Global Variables
 
-| Variable               | Description                                      |
-|------------------------|--------------------------------------------------|
-| RUNNER_APP             | Package name of the idle app to launch           |
-| FSM_POLL_INTERVAL      | Poll interval (seconds)                          |
-| FSM_IDLE_TIMEOUT       | Idle timeout (seconds)                           |
-| FSM_MQTT_ENABLED       | true/false                                       |
-| FSM_MQTT_HOST          | MQTT broker host                                 |
-| FSM_MQTT_PORT          | MQTT port                                        |
-| FSM_MQTT_TOPIC_PREFIX  | Base MQTT topic                                  |
-| FSM_LOG_LEVEL          | info/debug                                       |
+| Variable(s)                         | Description                                      |
+|-------------------------------------|--------------------------------------------------|
+| RUNNER_APP                          | Package name of the idle app to launch           |
+| RUNNER_POLL_SECONDS / FSM_POLL_INTERVAL | Poll interval (seconds)                     |
+| RUNNER_IDLE_TIMEOUT / FSM_IDLE_TIMEOUT | Idle timeout (seconds)                      |
+| FSM_MQTT_ENABLED                    | true/false                                       |
+| FSM_MQTT_HOST                       | MQTT broker host                                 |
+| FSM_MQTT_PORT                       | MQTT port                                        |
+| FSM_MQTT_TOPIC_PREFIX               | Base MQTT topic                                  |
+| FSM_LOG_LEVEL                       | info/debug                                       |
 
 ### Device Variables
 
 Devices are indexed:
 
 ```
-FSM_DEVICE_1_HOST=192.168.3.50
-FSM_DEVICE_1_NAME=livingroom
-FSM_DEVICE_1_IDLE_APP=com.example.slideshow
+RUNNER_DEVICE_1_IP=192.168.3.50
+RUNNER_DEVICE_1_NAME=livingroom
+RUNNER_DEVICE_1_IDLE_APP=com.example.slideshow
 ```
 
 To add more devices, increment:
 
 ```
-FSM_DEVICE_2_HOST=192.168.3.51
-FSM_DEVICE_2_NAME=bedroom
-FSM_DEVICE_2_IDLE_APP=com.example.black
+RUNNER_DEVICE_2_IP=192.168.3.51
+RUNNER_DEVICE_2_NAME=bedroom
+RUNNER_DEVICE_2_IDLE_APP=com.example.black
 ```
+
+Legacy `FSM_DEVICE_*` variables remain supported as aliases.
 
 ### Example Portainer Environment Block
 
 ```
-FSM_POLL_INTERVAL=5
-FSM_IDLE_TIMEOUT=300
+RUNNER_POLL_SECONDS=5
+RUNNER_DEVICE_1_IDLE_TIMEOUT=300
 FSM_MQTT_ENABLED=false
 RUNNER_APP=com.example.slideshow/.MainActivity
-FSM_DEVICE_1_HOST=192.168.3.50
-FSM_DEVICE_1_NAME=livingroom
-FSM_DEVICE_1_IDLE_APP=com.example.slideshow
+RUNNER_DEVICE_1_IP=192.168.3.50
+RUNNER_DEVICE_1_NAME=livingroom
+RUNNER_DEVICE_1_IDLE_APP=com.example.slideshow
 ```
 
 RUNNER_APP overrides any app value defined in config.yml. If
@@ -255,41 +268,41 @@ From the repo root:
 
 docker build -t firestick-minder:0.2.0 .
 
-Prepare config and ADB keys directory
-
-cp config.example.yml config.yml
-mkdir -p adb-keys
-
-Edit config.yml with your real Firestick IPs, idle target app, and (optionally) MQTT settings.
-
-docker run
-
-Example:
+Environment-only run (no config.yml needed)
 
 docker run \
   --name firestick-minder \
   --restart=unless-stopped \
   -d \
+  -e RUNNER_DEVICE_1_IP=192.168.1.50 \
+  -e RUNNER_DEVICE_1_IDLE_APP=de.mvlogic.photocloud.amazon \
+  -e RUNNER_DEVICE_1_IDLE_TIMEOUT=300 \
+  -e RUNNER_POLL_SECONDS=5 \
+  -v "$(pwd)/adb-keys:/root/.android" \
+  firestick-minder:0.2.0
+
+Optional: YAML config + env overrides
+
+If you want to use a YAML file, mount it and set `FIRESTICK_MINDER_CONFIG`:
+
+docker run \
+  --name firestick-minder \
+  --restart=unless-stopped \
+  -d \
+  -e FIRESTICK_MINDER_CONFIG=/config/config.yml \
   -v "$(pwd)/config.yml:/config/config.yml:ro" \
   -v "$(pwd)/adb-keys:/root/.android" \
   firestick-minder:0.2.0
 
+Env vars still override YAML when both are provided.
+
 docker-compose
 
-A docker-compose.yml is provided. From the repo root:
+A docker-compose.yml with environment-only and YAML+env examples is provided. From the repo root:
 
 docker compose up -d
 
-This will:
-•Run the container as firestick-minder.
-•Mount ./config.yml into /config/config.yml in the container.
-•Persist ADB keys under ./adb-keys so you don’t get new debugging prompts after every container recreation.
-
-If your networking setup requires, you can adjust docker-compose.yml to use:
-
-network_mode: "host"
-
-(on Linux hosts) so the container shares the host’s IP.
+Adjust `network_mode: "host"` if your environment requires the container to share the host’s IP (Linux hosts only).
 
 ⸻
 
@@ -344,7 +357,7 @@ If MQTT is configured, a JSON state snapshot is published on each poll to:
 
 Environment variable
 •FIRESTICK_MINDER_CONFIG
-Override the default config path (defaults to ./config.yml on bare metal, and is set to /config/config.yml inside the Docker image).
+Optional path to a YAML config file. If unset, Firestick-Minder runs with environment variables only.
 
 Example:
 
