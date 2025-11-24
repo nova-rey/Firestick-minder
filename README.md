@@ -121,11 +121,8 @@ Fields
 How often to poll each Firestick for its state.
 5 seconds is a good default; you can lower this (e.g. 2–3) for faster reaction.
 •idle_timeout_seconds (optional)
-If set to a positive integer, firestick-minder will also treat idle time inside any non-target, non-home app (with no media playing) as a trigger:
-•If a device sits in the same app with no media playing for at least idle_timeout_seconds,
-•And it is not already in the configured idle target app,
-•firestick-minder will launch the idle target app.
-If this field is omitted, the idle timer is disabled; only the home-screen behavior applies.
+If set to a positive integer, firestick-minder will launch the idle target app after the device has remained on the home screen with no media playing (and not already in the target app) for at least idle_timeout_seconds.
+If this field is omitted, the idle timer defaults to immediate launch once the home screen is idle.
 •devices (list)
 Each entry defines one Firestick:
 •name
@@ -367,17 +364,13 @@ On each poll, for each device:
 •home_screen is true if the foreground package is in home_packages.
 •in_target_app is true if the foreground package matches the target app package.
 
-Actions:
-•If home_screen == true, media_playing == false, and in_target_app == false:
-•→ Launch the idle target app (slideshow_component).
-•If idle_timeout_seconds is configured and:
-•Not in the target app, and
-•Not on the home screen, and
-•Not playing media, and
-•The combination of foreground app + media state has been unchanged for at least idle_timeout_seconds:
-•→ Launch the idle target app.
-
-After launching the target app, idle tracking is reset for that device.
+Idle tracking:
+•Idle time only accumulates when the device is on the home screen, not already in the target app, and media_playing == false.
+•Any active media playback resets idle tracking to 0 seconds, even if the home screen is foregrounded.
+•If the target idle app is already foreground, idle tracking is reset and the app is not relaunched.
+•When idle_seconds reaches idle_timeout_seconds (or immediately if idle_timeout_seconds is unset), the idle target app is launched and idle tracking resets.
+•If media is playing on the Fire TV (for example, Alexa music), firestick-minder treats the device as active and does not start the idle app.
+•Once the target idle app is open, firestick-minder continues polling and logging state but will not relaunch the idle app until you exit it.
 
 If MQTT is configured, a JSON state snapshot is published on each poll to:
 
