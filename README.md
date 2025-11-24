@@ -149,6 +149,56 @@ The published payload is JSON, e.g.:
 }
 
 
+## Configuration via Environment Variables
+
+firestick-minder now supports configuration using environment variables.
+Environment variables override values in `config.yml`. If an env var is not
+provided, the value falls back to YAML. Env-only setups are fully supported.
+
+### Global Variables
+
+| Variable               | Description                      |
+|------------------------|----------------------------------|
+| FSM_POLL_INTERVAL      | Poll interval (seconds)          |
+| FSM_IDLE_TIMEOUT       | Idle timeout (seconds)           |
+| FSM_MQTT_ENABLED       | true/false                       |
+| FSM_MQTT_HOST          | MQTT broker host                 |
+| FSM_MQTT_PORT          | MQTT port                        |
+| FSM_MQTT_TOPIC_PREFIX  | Base MQTT topic                  |
+| FSM_LOG_LEVEL          | info/debug                       |
+
+### Device Variables
+
+Devices are indexed:
+
+```
+FSM_DEVICE_1_HOST=192.168.3.50
+FSM_DEVICE_1_NAME=livingroom
+FSM_DEVICE_1_IDLE_APP=com.example.slideshow
+```
+
+To add more devices, increment:
+
+```
+FSM_DEVICE_2_HOST=192.168.3.51
+FSM_DEVICE_2_NAME=bedroom
+FSM_DEVICE_2_IDLE_APP=com.example.black
+```
+
+### Example Portainer Environment Block
+
+```
+FSM_POLL_INTERVAL=5
+FSM_IDLE_TIMEOUT=300
+FSM_MQTT_ENABLED=false
+FSM_DEVICE_1_HOST=192.168.3.50
+FSM_DEVICE_1_NAME=livingroom
+FSM_DEVICE_1_IDLE_APP=com.example.slideshow
+```
+
+Environment variables take precedence over YAML.
+
+
 ⸻
 
 Running without Docker (bare Linux / LXC)
