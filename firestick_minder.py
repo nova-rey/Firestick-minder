@@ -288,6 +288,8 @@ def main_loop() -> None:
     sources = config.get("sources", {})
     env_devices_count = config.get("env_devices_count", 0)
     env_present = config.get("env_present", False)
+    idle_app = config.get("idle_app")
+    idle_app_source = config.get("idle_app_source", "default")
 
     idle_enabled = idle_timeout is not None
     mqtt_enabled = mqtt_cfg is not None
@@ -331,6 +333,10 @@ def main_loop() -> None:
         f"Polling interval: {poll_interval} seconds "
         f"(source: {sources.get('poll_interval_seconds', 'default')})"
     )
+    if idle_app:
+        print(f"Idle app: {idle_app} (source={idle_app_source})")
+    else:
+        print("Idle app: <none> (using default behavior)")
     if idle_enabled:
         print(
             f"Idle timer enabled: {idle_timeout} seconds "

@@ -27,6 +27,7 @@ services:
     # Example environment variable configuration (uncomment to use).
     # environment:
     #   FSM_POLL_INTERVAL: 5
+    #   RUNNER_APP: com.example.slideshow/.MainActivity
     #   FSM_DEVICE_1_HOST: 192.168.3.50
     #   FSM_DEVICE_1_NAME: livingroom
     #   FSM_DEVICE_1_IDLE_APP: com.example.slideshow/.MainActivity
