@@ -1,22 +1,16 @@
 FROM python:3.11-slim
 
-# Install adb (Android platform-tools)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends android-sdk-platform-tools && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-RUN pip install --no-cache-dir pyyaml paho-mqtt
-
-# Set working directory
+# Ensure we have a predictable workdir
 WORKDIR /app
 
-# Copy main script into the image
-COPY firestick_minder.py /app/firestick_minder.py
+# Install runtime dependencies first (if requirements.txt exists)
+# This keeps rebuilds fast when only app code changes.
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Default config path inside the container will be /config/config.yml
-# Users are expected to bind-mount a config file there.
-ENV FIRESTICK_MINDER_CONFIG=/config/config.yml
-ENV PYTHONUNBUFFERED=1
+# Copy the entire application source tree into the image, including
+# firestick_minder.py, config.py, and any future helpers.
+COPY . /app
 
-CMD ["python", "/app/firestick_minder.py"]
+# Default command: run the minder daemon
+CMD ["python", "-u", "/app/firestick_minder.py"]
