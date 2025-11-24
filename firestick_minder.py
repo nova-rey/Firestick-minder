@@ -45,7 +45,8 @@ def adb(device: Dict[str, Any], *args: str, timeout: int = 5) -> Optional[subpro
     """
     Run an adb command against a specific Firestick and return the CompletedProcess.
     """
-    target = f"{device['host']}:5555"
+    adb_port = device.get("adb_port", 5555)
+    target = f"{device['host']}:{adb_port}"
     cmd = ["adb", "-s", target, *args]
     try:
         proc = subprocess.run(
@@ -65,7 +66,8 @@ def ensure_connected(device: Dict[str, Any]) -> bool:
     Make sure we're connected to this Firestick over TCP.
     If not, try to connect.
     """
-    target = f"{device['host']}:5555"
+    adb_port = device.get("adb_port", 5555)
+    target = f"{device['host']}:{adb_port}"
 
     # First try a simple get-state.
     try:
@@ -191,7 +193,19 @@ def launch_slideshow(device: Dict[str, Any]) -> None:
     """
     comp = device["slideshow_component"]
     print(f"[{device['name']}] Launching idle target app: {comp}")
-    proc = adb(device, "shell", "am", "start", "-n", comp)
+    if "/" in comp:
+        proc = adb(device, "shell", "am", "start", "-n", comp)
+    else:
+        proc = adb(
+            device,
+            "shell",
+            "monkey",
+            "-p",
+            comp,
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+        )
     if not proc:
         print(f"[{device['name']}] Failed to launch target app (no adb result).", file=sys.stderr)
         return
@@ -308,54 +322,42 @@ def main_loop() -> None:
         topic_prefix = mqtt_cfg["topic_prefix"]
 
     print("firestick-minder starting up...")
-    print(
-        "Environment variables detected."
-        if env_present
-        else "No environment variable overrides detected."
-    )
-
-    config_sources = []
     if config_path:
-        config_sources.append("YAML file")
-    if env_present:
-        config_sources.append("environment")
-    if not config_sources:
-        config_sources.append("defaults")
-
-    if config_path:
-        print(f"Using config file: {config_path}")
+        print(f"[startup] Config source: YAML file {config_path}")
     else:
-        print("No config file loaded; using environment variables and defaults.")
+        print("[startup] Config source: environment variables (env-only mode)")
 
-    print(f"Config sources used: {', '.join(config_sources)}")
-    print(f"Devices from env vars: {env_devices_count}")
-    print(f"Configured devices: {[d['name'] for d in devices]}")
+    device_labels = [d["name"] for d in devices]
     print(
-        f"Polling interval: {poll_interval} seconds "
+        f"[startup] Devices ({len(devices)}): {device_labels} "
+        f"(source: {sources.get('devices', 'default')})"
+    )
+    print(
+        f"[startup] Polling every {poll_interval} seconds "
         f"(source: {sources.get('poll_interval_seconds', 'default')})"
     )
     if idle_app:
-        print(f"Idle app: {idle_app} (source={idle_app_source})")
+        print(f"[startup] Idle app: {idle_app} (source: {idle_app_source})")
     else:
-        print("Idle app: <none> (using default behavior)")
+        print("[startup] Idle app: <none> (set MINDER_APP or per-device app if needed)")
     if idle_enabled:
         print(
-            f"Idle timer enabled: {idle_timeout} seconds "
+            f"[startup] Idle timer enabled at {idle_timeout} seconds "
             f"(source: {sources.get('idle_timeout_seconds', 'default')})"
         )
     else:
         print(
-            "Idle timer disabled (no idle_timeout_seconds configured). "
+            "[startup] Idle timer disabled (idle_timeout_seconds not configured). "
             f"(source: {sources.get('idle_timeout_seconds', 'default')})"
         )
     if mqtt_enabled:
         print(
-            f"MQTT enabled with topic_prefix='{topic_prefix}' "
+            f"[startup] MQTT enabled with topic_prefix='{topic_prefix}' "
             f"(source: {sources.get('mqtt', 'default')})"
         )
     else:
         print(
-            "MQTT disabled (no mqtt section configured). "
+            "[startup] MQTT disabled (no mqtt section configured). "
             f"(source: {sources.get('mqtt', 'default')})"
         )
 

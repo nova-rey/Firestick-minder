@@ -1,31 +1,29 @@
 version: "3.8"
 
-# Basic example: environment-only configuration
 services:
   firestick-minder:
     image: novarey4200/firestick-minder:latest
     container_name: firestick-minder
     restart: unless-stopped
     environment:
-      RUNNER_DEVICE_1_IP: 192.168.1.50
-      RUNNER_DEVICE_1_IDLE_APP: de.mvlogic.photocloud.amazon
-      RUNNER_DEVICE_1_IDLE_TIMEOUT: 300
+      # Quick start using legacy shorthand
+      RUNNER_DEVICES: LR=192.168.30.51
       RUNNER_POLL_SECONDS: 5
+      FSM_IDLE_TIMEOUT: 10
+      MINDER_APP: com.snapwood.nfolio
     # optional: mount adb keys if needed
     volumes:
       - /opt/firestick-minder/adb-keys:/root/.android
 
----
-
-# Advanced example: YAML file with env overrides
-version: "3.8"
-services:
-  firestick-minder-yaml:
+  firestick-minder-structured:
     image: novarey4200/firestick-minder:latest
-    container_name: firestick-minder-yaml
+    container_name: firestick-minder-structured
     restart: unless-stopped
     environment:
-      FIRESTICK_MINDER_CONFIG: /config/config.yml
+      FIRESTICK_MINDER_DEVICE_LR_HOST: 192.168.30.51
+      FIRESTICK_MINDER_DEVICE_LR_APP: com.snapwood.nfolio
+      RUNNER_POLL_SECONDS: 5
+      FSM_IDLE_TIMEOUT: 10
     volumes:
-      - /opt/firestick-minder/config:/config
       - /opt/firestick-minder/adb-keys:/root/.android
+

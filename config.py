@@ -48,7 +48,8 @@ def _normalize_device(device: Dict[str, Any], idx: int) -> Dict[str, Any]:
     name = device.get("name") or f"device_{idx}"
     host = device.get("host")
     home_packages = device.get("home_packages", []) or list(_DEF_HOME_PACKAGES)
-    slideshow_component = device.get("slideshow_component")
+    slideshow_component = device.get("slideshow_component") or device.get("app")
+    adb_port_raw = device.get("adb_port", 5555)
 
     if not host or not isinstance(host, (str, int)):
         raise ConfigError(f"Device {name!r} is missing a valid 'host' field")
@@ -61,11 +62,20 @@ def _normalize_device(device: Dict[str, Any], idx: int) -> Dict[str, Any]:
             f"Device {name!r} must have a non-empty 'home_packages' list"
         )
 
+    try:
+        adb_port = int(adb_port_raw)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"Device {name!r} has invalid adb_port") from exc
+
+    if adb_port <= 0:
+        raise ConfigError(f"Device {name!r} has invalid adb_port")
+
     return {
         "name": str(name),
         "host": str(host),
         "home_packages": set(map(str, home_packages)),
         "slideshow_component": slideshow_component,
+        "adb_port": adb_port,
     }
 
 
@@ -123,15 +133,99 @@ def load_env_devices() -> List[Dict[str, Any]]:
         raw = devices_raw[idx]
         if not raw:
             continue
-        if "host" not in raw or "slideshow_component" not in raw:
-            raise ConfigError(
-                "Env devices require HOST and IDLE_APP (slideshow_component) entries"
-            )
+        if "host" not in raw:
+            continue
 
-        normalized = _normalize_device(raw, idx)
         if "name" not in raw:
-            normalized["name"] = f"device_{idx}"
-        devices.append(normalized)
+            raw["name"] = f"device_{idx}"
+        devices.append(raw)
+
+    return devices
+
+
+def build_devices_from_env() -> List[Dict[str, Any]]:
+    """Build devices from FIRESTICK_MINDER_DEVICE_* environment variables."""
+
+    pattern = re.compile(
+        r"^FIRESTICK_MINDER_DEVICE_([A-Z0-9]+)_(HOST|APP|ADB_PORT)$", re.IGNORECASE
+    )
+    devices_raw: Dict[str, Dict[str, Any]] = {}
+
+    for key, value in os.environ.items():
+        match = pattern.match(key)
+        if not match:
+            continue
+
+        name = match.group(1).upper()
+        field = match.group(2).upper()
+        entry = devices_raw.setdefault(name, {"name": name})
+
+        if field == "HOST":
+            entry["host"] = value
+        elif field == "APP":
+            entry["app"] = value
+        elif field == "ADB_PORT":
+            entry["adb_port"] = _parse_int_env(value, key)
+
+    devices: List[Dict[str, Any]] = []
+    for name in sorted(devices_raw):
+        raw = devices_raw[name]
+        if "host" not in raw:
+            # A host entry is required to form a device; skip partials.
+            continue
+        if "adb_port" not in raw:
+            raw["adb_port"] = 5555
+        devices.append(raw)
+
+    return devices
+
+
+def build_devices_from_runner_devices(raw: str) -> List[Dict[str, Any]]:
+    """Parse legacy RUNNER_DEVICES shorthand."""
+
+    devices: List[Dict[str, Any]] = []
+    if not raw:
+        return devices
+
+    entries = raw.split(",")
+    for entry in entries:
+        entry = entry.strip()
+        if not entry:
+            continue
+
+        if "=" not in entry:
+            print(f"[config] Ignoring malformed RUNNER_DEVICES entry: {entry!r}")
+            continue
+
+        name_part, value_part = entry.split("=", 1)
+        name = name_part.strip()
+        if not name:
+            print(f"[config] Ignoring RUNNER_DEVICES entry with empty name: {entry!r}")
+            continue
+
+        if not value_part:
+            print(f"[config] Ignoring RUNNER_DEVICES entry with empty host: {entry!r}")
+            continue
+
+        host = value_part
+        adb_port = 5555
+        if ":" in value_part:
+            host, port_part = value_part.split(":", 1)
+            if not host:
+                print(
+                    f"[config] Ignoring RUNNER_DEVICES entry with empty host: {entry!r}"
+                )
+                continue
+            if port_part:
+                try:
+                    adb_port = _parse_int_env(port_part, f"RUNNER_DEVICES[{name}]")
+                except ConfigError as exc:
+                    print(
+                        f"[config] Ignoring RUNNER_DEVICES entry due to invalid port: {entry!r} ({exc})"
+                    )
+                    continue
+
+        devices.append({"name": name, "host": host, "adb_port": adb_port})
 
     return devices
 
@@ -216,7 +310,8 @@ def _build_config(
     yaml_config: Dict[str, Any], yaml_loaded: bool, config_path: Optional[Path]
 ) -> Dict[str, Any]:
     """Build the configuration object from YAML and environment data."""
-    env_devices = load_env_devices()
+    env_devices_structured = build_devices_from_env()
+    env_devices_indexed = load_env_devices()
     env_overrides_used = False
 
     sources: Dict[str, str] = {}
@@ -231,12 +326,13 @@ def _build_config(
         idle_app = yaml_idle_app.strip()
         idle_app_source = "yaml"
 
-    env_idle_app = os.getenv("RUNNER_APP")
+    env_idle_app = os.getenv("MINDER_APP") or os.getenv("RUNNER_APP")
     if env_idle_app:
         idle_app = env_idle_app
-        idle_app_source = "env"
+        env_var_used = "MINDER_APP" if os.getenv("MINDER_APP") else "RUNNER_APP"
+        idle_app_source = f"env {env_var_used}"
         env_overrides_used = True
-        print(f"[config] idle app set from env RUNNER_APP={env_idle_app}")
+        print(f"[config] idle app set from env {env_var_used}={env_idle_app}")
     elif idle_app is not None:
         print(f"[config] idle app set from YAML: {idle_app}")
 
@@ -298,25 +394,64 @@ def _build_config(
         sources["log_level"] = "yaml" if yaml_loaded and "log_level" in yaml_config else "default"
 
     # Devices
-    devices_config = yaml_config.get("devices", []) if yaml_loaded else []
-    devices: List[Dict[str, Any]] = []
-    if env_devices:
-        devices = env_devices
-        sources["devices"] = "env"
+    yaml_devices_config = yaml_config.get("devices", []) if yaml_loaded else []
+    if yaml_loaded and yaml_devices_config and not isinstance(yaml_devices_config, list):
+        raise ConfigError("devices must be a non-empty list")
+
+    raw_devices: List[Dict[str, Any]] = []
+    devices_source = "default"
+
+    if env_devices_structured:
+        raw_devices = env_devices_structured
+        devices_source = "structured_env"
         env_overrides_used = True
-    else:
-        if not isinstance(devices_config, list) or not devices_config:
+        print(
+            f"[startup] Using {len(raw_devices)} devices from FIRESTICK_MINDER_DEVICE_* env vars."
+        )
+        if os.getenv("RUNNER_DEVICES"):
+            print("[startup] Ignoring RUNNER_DEVICES because structured env devices were found.")
+    elif env_devices_indexed:
+        raw_devices = env_devices_indexed
+        devices_source = "env"
+        env_overrides_used = True
+        print(f"[startup] Using {len(raw_devices)} devices from indexed env vars.")
+    elif yaml_loaded and yaml_devices_config:
+        if not isinstance(yaml_devices_config, list):
             raise ConfigError("devices must be a non-empty list")
-        for idx, dev in enumerate(devices_config):
-            if not isinstance(dev, dict):
-                raise ConfigError(f"Device entry at index {idx} must be a mapping")
-            devices.append(_normalize_device(dev, idx))
-        sources["devices"] = "yaml"
+        raw_devices = yaml_devices_config
+        devices_source = "yaml"
+    else:
+        runner_devices_raw = os.environ.get("RUNNER_DEVICES")
+        if runner_devices_raw:
+            runner_devices = build_devices_from_runner_devices(runner_devices_raw)
+            if runner_devices:
+                raw_devices = runner_devices
+                devices_source = "runner_devices"
+                env_overrides_used = True
+                print(
+                    f"[startup] Using {len(raw_devices)} devices from legacy RUNNER_DEVICES."
+                )
 
-    if idle_app:
-        for device in devices:
-            device["slideshow_component"] = idle_app
+    devices: List[Dict[str, Any]] = []
+    for idx, dev in enumerate(raw_devices):
+        device_copy = dict(dev)
+        if "slideshow_component" not in device_copy and "app" in device_copy:
+            device_copy["slideshow_component"] = device_copy.get("app")
+        if idle_app and not device_copy.get("slideshow_component"):
+            device_copy["slideshow_component"] = idle_app
+        if "adb_port" not in device_copy:
+            device_copy["adb_port"] = 5555
+        devices.append(_normalize_device(device_copy, idx))
 
+    if not devices:
+        print(
+            "[startup] Config error: no devices configured; set RUNNER_DEVICES or FIRESTICK_MINDER_DEVICE_<NAME>_HOST."
+        )
+        raise ConfigError(
+            "Config error: no devices configured; set RUNNER_DEVICES or FIRESTICK_MINDER_DEVICE_<NAME>_HOST."
+        )
+
+    sources["devices"] = devices_source
     sources["idle_app"] = idle_app_source
 
     # MQTT
@@ -361,7 +496,10 @@ def _build_config(
 
     sources["mqtt"] = mqtt_source
 
-    env_present = env_overrides_used or bool(env_devices)
+    env_devices_count = len(env_devices_structured) + len(env_devices_indexed)
+    env_present = env_overrides_used or bool(env_devices_structured or env_devices_indexed)
+    if not env_present and os.getenv("RUNNER_DEVICES"):
+        env_present = True
 
     # Log sources
     poll_src = sources.get("poll_interval_seconds", "unknown")
@@ -392,7 +530,7 @@ def _build_config(
         "mqtt": mqtt_cfg,
         "config_path": str(config_path) if yaml_loaded and config_path else None,
         "sources": sources,
-        "env_devices_count": len(env_devices),
+        "env_devices_count": env_devices_count,
         "env_present": env_present,
         "log_level": log_level,
         "idle_app": idle_app,
