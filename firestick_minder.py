@@ -23,6 +23,7 @@ Non-destructive:
 """
 
 import json
+import shutil
 import subprocess
 import time
 import re
@@ -40,6 +41,28 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # ADB HELPERS
 # ---------------------------------------------------------------------------
+
+
+def ensure_adb_available() -> None:
+    """
+    Verify that the 'adb' binary is available on PATH.
+
+    This is primarily a Docker-image sanity check so users get a clean
+    error instead of [Errno 2] when adb is missing.
+    """
+    from logging import getLogger
+
+    logger = getLogger("firestick_minder.adb_check")
+    adb_path = shutil.which("adb")
+
+    if not adb_path:
+        logger.error(
+            "[fatal] adb binary not found on PATH; this image is missing the "
+            "'adb' package. Exiting."
+        )
+        sys.exit(1)
+
+    logger.info("[startup] adb found at %s", adb_path)
 
 def adb(device: Dict[str, Any], *args: str, timeout: int = 5) -> Optional[subprocess.CompletedProcess]:
     """
@@ -480,4 +503,5 @@ def main_loop() -> None:
 
 
 if __name__ == "__main__":
+    ensure_adb_available()
     main_loop()
