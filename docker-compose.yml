@@ -23,3 +23,11 @@ services:
     #
     # This makes the container share the host's IP, which can simplify
     # networking in some homelab environments (Linux only).
+
+    # Example environment variable configuration (uncomment to use).
+    # environment:
+    #   FSM_POLL_INTERVAL: 5
+    #   FSM_DEVICE_1_HOST: 192.168.3.50
+    #   FSM_DEVICE_1_NAME: livingroom
+    #   FSM_DEVICE_1_IDLE_APP: com.example.slideshow/.MainActivity
+    #   FSM_MQTT_ENABLED: "false"

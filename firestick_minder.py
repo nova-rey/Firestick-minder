@@ -13,151 +13,27 @@ Configuration is provided via a YAML file (default: ./config.yml) with:
 - devices: list of {name, host, home_packages, slideshow_component}
 - optional mqtt: host/port/topic_prefix (+ optional username/password)
 
+Environment variables can override or replace YAML values entirely when running
+in containerized or managed environments.
+
 Non-destructive:
 - No rooting, no custom ROM, no launcher patching.
 - Stop the script/container and your Firesticks go back to normal behavior.
 """
 
 import json
-import os
 import subprocess
 import time
 import re
 import sys
 from typing import Dict, Any, List, Optional
 
-import yaml
+from config import ConfigError, load_config
 
 try:
     import paho.mqtt.client as mqtt  # type: ignore
 except ImportError:
     mqtt = None  # MQTT is optional; only used if configured
-
-# ---------------------------------------------------------------------------
-# CONFIG LOADING
-# ---------------------------------------------------------------------------
-
-DEFAULT_CONFIG_PATH = "./config.yml"
-ENV_CONFIG_VAR = "FIRESTICK_MINDER_CONFIG"
-
-
-class ConfigError(Exception):
-    """Raised for configuration-related issues."""
-
-
-def load_config(path: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Load YAML configuration from the given path.
-
-    Expected schema:
-      poll_interval_seconds: int
-      idle_timeout_seconds: int (optional, global)
-      devices:
-        - name: str
-          host: str
-          home_packages: [str, ...]
-          slideshow_component: str  # "<package>/<Activity>"
-      mqtt:                      # optional
-        host: str
-        port: int
-        topic_prefix: str
-        username: str (optional)
-        password: str (optional)
-    """
-    config_path = path or os.environ.get(ENV_CONFIG_VAR, DEFAULT_CONFIG_PATH)
-
-    if not os.path.exists(config_path):
-        raise ConfigError(f"Config file not found: {config_path}")
-
-    with open(config_path, "r", encoding="utf-8") as f:
-        try:
-            data = yaml.safe_load(f) or {}
-        except yaml.YAMLError as exc:
-            raise ConfigError(f"Failed to parse YAML config: {exc}") from exc
-
-    if not isinstance(data, dict):
-        raise ConfigError("Top-level YAML config must be a mapping")
-
-    poll_interval = data.get("poll_interval_seconds", 5)
-    devices = data.get("devices", [])
-    idle_timeout = data.get("idle_timeout_seconds", None)
-    mqtt_cfg = data.get("mqtt", None)
-
-    if not isinstance(poll_interval, int) or poll_interval <= 0:
-        raise ConfigError("poll_interval_seconds must be a positive integer")
-
-    if idle_timeout is not None:
-        if not isinstance(idle_timeout, int) or idle_timeout <= 0:
-            raise ConfigError("idle_timeout_seconds, if set, must be a positive integer")
-
-    if not isinstance(devices, list) or not devices:
-        raise ConfigError("devices must be a non-empty list")
-
-    # Normalize devices: ensure required keys exist and types are correct.
-    norm_devices: List[Dict[str, Any]] = []
-    for idx, dev in enumerate(devices):
-        if not isinstance(dev, dict):
-            raise ConfigError(f"Device entry at index {idx} must be a mapping")
-
-        name = dev.get("name") or f"device_{idx}"
-        host = dev.get("host")
-        home_packages = dev.get("home_packages", [])
-        slideshow_component = dev.get("slideshow_component")
-
-        if not host or not isinstance(host, (str, int)):
-            raise ConfigError(f"Device {name!r} is missing a valid 'host' field")
-
-        if not slideshow_component or not isinstance(slideshow_component, str):
-            raise ConfigError(f"Device {name!r} is missing 'slideshow_component'")
-
-        if not isinstance(home_packages, list) or not home_packages:
-            raise ConfigError(
-                f"Device {name!r} must have a non-empty 'home_packages' list"
-            )
-
-        norm_devices.append(
-            {
-                "name": str(name),
-                "host": str(host),
-                "home_packages": set(map(str, home_packages)),
-                "slideshow_component": slideshow_component,
-            }
-        )
-
-    # Normalize MQTT config if present.
-    norm_mqtt: Optional[Dict[str, Any]] = None
-    if mqtt_cfg is not None:
-        if not isinstance(mqtt_cfg, dict):
-            raise ConfigError("mqtt section must be a mapping if present")
-
-        host = mqtt_cfg.get("host")
-        port = mqtt_cfg.get("port", 1883)
-        topic_prefix = mqtt_cfg.get("topic_prefix", "home/firestick")
-
-        if not host or not isinstance(host, str):
-            raise ConfigError("mqtt.host must be a non-empty string")
-
-        if not isinstance(port, int) or port <= 0:
-            raise ConfigError("mqtt.port must be a positive integer")
-
-        if not isinstance(topic_prefix, str) or not topic_prefix:
-            raise ConfigError("mqtt.topic_prefix must be a non-empty string")
-
-        norm_mqtt = {
-            "host": host,
-            "port": port,
-            "topic_prefix": topic_prefix.rstrip("/"),
-            "username": mqtt_cfg.get("username"),
-            "password": mqtt_cfg.get("password"),
-        }
-
-    return {
-        "poll_interval_seconds": poll_interval,
-        "idle_timeout_seconds": idle_timeout,
-        "devices": norm_devices,
-        "mqtt": norm_mqtt,
-        "config_path": config_path,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +285,9 @@ def main_loop() -> None:
     devices = config["devices"]
     mqtt_cfg = config["mqtt"]
     config_path = config["config_path"]
+    sources = config.get("sources", {})
+    env_devices_count = config.get("env_devices_count", 0)
+    env_present = config.get("env_present", False)
 
     idle_enabled = idle_timeout is not None
     mqtt_enabled = mqtt_cfg is not None
@@ -426,17 +305,52 @@ def main_loop() -> None:
         topic_prefix = mqtt_cfg["topic_prefix"]
 
     print("firestick-minder starting up...")
-    print(f"Using config file: {config_path}")
+    print(
+        "Environment variables detected."
+        if env_present
+        else "No environment variable overrides detected."
+    )
+
+    config_sources = []
+    if config_path:
+        config_sources.append("YAML file")
+    if env_present:
+        config_sources.append("environment")
+    if not config_sources:
+        config_sources.append("defaults")
+
+    if config_path:
+        print(f"Using config file: {config_path}")
+    else:
+        print("No config file loaded; using environment variables and defaults.")
+
+    print(f"Config sources used: {', '.join(config_sources)}")
+    print(f"Devices from env vars: {env_devices_count}")
     print(f"Configured devices: {[d['name'] for d in devices]}")
-    print(f"Polling interval: {poll_interval} seconds")
+    print(
+        f"Polling interval: {poll_interval} seconds "
+        f"(source: {sources.get('poll_interval_seconds', 'default')})"
+    )
     if idle_enabled:
-        print(f"Idle timer enabled: {idle_timeout} seconds")
+        print(
+            f"Idle timer enabled: {idle_timeout} seconds "
+            f"(source: {sources.get('idle_timeout_seconds', 'default')})"
+        )
     else:
-        print("Idle timer disabled (no idle_timeout_seconds configured).")
+        print(
+            "Idle timer disabled (no idle_timeout_seconds configured). "
+            f"(source: {sources.get('idle_timeout_seconds', 'default')})"
+        )
     if mqtt_enabled:
-        print(f"MQTT enabled with topic_prefix='{topic_prefix}'")
+        print(
+            f"MQTT enabled with topic_prefix='{topic_prefix}' "
+            f"(source: {sources.get('mqtt', 'default')})"
+        )
     else:
-        print("MQTT disabled (no mqtt section configured).")
+        print(
+            "MQTT disabled (no mqtt section configured). "
+            f"(source: {sources.get('mqtt', 'default')})"
+        )
 
     while True:
         loop_started = time.time()
