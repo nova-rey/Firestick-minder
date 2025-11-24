@@ -155,6 +155,25 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
 
     sources: Dict[str, str] = {}
 
+    idle_app = None
+    idle_app_source = "default"
+
+    yaml_idle_app = yaml_config.get("idle_app") or yaml_config.get("app")
+    if yaml_idle_app is not None:
+        if not isinstance(yaml_idle_app, str) or not yaml_idle_app.strip():
+            raise ConfigError("idle_app/app must be a non-empty string if provided")
+        idle_app = yaml_idle_app.strip()
+        idle_app_source = "yaml"
+
+    env_idle_app = os.getenv("RUNNER_APP")
+    if env_idle_app:
+        idle_app = env_idle_app
+        idle_app_source = "env"
+        env_overrides_used = True
+        print(f"[config] idle app set from env RUNNER_APP={env_idle_app}")
+    elif idle_app is not None:
+        print(f"[config] idle app set from YAML: {idle_app}")
+
     # poll_interval_seconds
     poll_interval = 5
     if "poll_interval_seconds" in yaml_config:
@@ -212,6 +231,12 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
                 raise ConfigError(f"Device entry at index {idx} must be a mapping")
             devices.append(_normalize_device(dev, idx))
         sources["devices"] = "yaml"
+
+    if idle_app:
+        for device in devices:
+            device["slideshow_component"] = idle_app
+
+    sources["idle_app"] = idle_app_source
 
     # MQTT
     mqtt_cfg = None
@@ -289,4 +314,6 @@ def load_config(path: Optional[str] = None) -> Dict[str, Any]:
         "env_devices_count": len(env_devices),
         "env_present": env_present,
         "log_level": log_level,
+        "idle_app": idle_app,
+        "idle_app_source": idle_app_source,
     }

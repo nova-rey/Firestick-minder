@@ -157,15 +157,16 @@ provided, the value falls back to YAML. Env-only setups are fully supported.
 
 ### Global Variables
 
-| Variable               | Description                      |
-|------------------------|----------------------------------|
-| FSM_POLL_INTERVAL      | Poll interval (seconds)          |
-| FSM_IDLE_TIMEOUT       | Idle timeout (seconds)           |
-| FSM_MQTT_ENABLED       | true/false                       |
-| FSM_MQTT_HOST          | MQTT broker host                 |
-| FSM_MQTT_PORT          | MQTT port                        |
-| FSM_MQTT_TOPIC_PREFIX  | Base MQTT topic                  |
-| FSM_LOG_LEVEL          | info/debug                       |
+| Variable               | Description                                      |
+|------------------------|--------------------------------------------------|
+| RUNNER_APP             | Package name of the idle app to launch           |
+| FSM_POLL_INTERVAL      | Poll interval (seconds)                          |
+| FSM_IDLE_TIMEOUT       | Idle timeout (seconds)                           |
+| FSM_MQTT_ENABLED       | true/false                                       |
+| FSM_MQTT_HOST          | MQTT broker host                                 |
+| FSM_MQTT_PORT          | MQTT port                                        |
+| FSM_MQTT_TOPIC_PREFIX  | Base MQTT topic                                  |
+| FSM_LOG_LEVEL          | info/debug                                       |
 
 ### Device Variables
 
@@ -191,10 +192,15 @@ FSM_DEVICE_2_IDLE_APP=com.example.black
 FSM_POLL_INTERVAL=5
 FSM_IDLE_TIMEOUT=300
 FSM_MQTT_ENABLED=false
+RUNNER_APP=com.example.slideshow/.MainActivity
 FSM_DEVICE_1_HOST=192.168.3.50
 FSM_DEVICE_1_NAME=livingroom
 FSM_DEVICE_1_IDLE_APP=com.example.slideshow
 ```
+
+RUNNER_APP overrides any app value defined in config.yml. If
+RUNNER_APP is not set, the value from YAML is used instead (if present),
+and if neither is provided the current default behavior is preserved.
 
 Environment variables take precedence over YAML.
 
