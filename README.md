@@ -155,6 +155,11 @@ firestick-minder now supports configuration using environment variables.
 Environment variables override values in `config.yml`. If an env var is not
 provided, the value falls back to YAML. Env-only setups are fully supported.
 
+> Note: The Docker image bundles the `config.py` loader module. If you prefer
+> to configure Firestick-Minder entirely via environment variables, you can
+> leave `FIRESTICK_MINDER_CONFIG` unset and the daemon will start without a
+> YAML file.
+
 ### Global Variables
 
 | Variable               | Description                                      |
