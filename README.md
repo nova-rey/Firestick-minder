@@ -161,6 +161,22 @@ To discover:
 adb shell pm list packages
 adb shell dumpsys package <your.package.name> | grep MAIN -A 1
 
+On startup, once adb connects to each device, firestick-minder will log the installed
+packages for that device so you can copy/paste the package id you need for
+`MINDER_APP`:
+
+```
+[discover:LR] installed packages (92):
+[discover:LR]   com.amazon.tv.launcher
+[discover:LR]   com.snapwood.nfolio
+[discover:LR]   org.xbmc.kodi
+[discover:LR]   ...
+[discover:LR] end installed packages
+```
+
+To find the correct value for `MINDER_APP`, start the container, open the app you
+want on the Fire TV, and look for it in the `[discover:<alias>]` block in the logs.
+
 
 •mqtt (optional)
 If present, firestick-minder will publish per-device state over MQTT.
