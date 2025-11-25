@@ -23,6 +23,7 @@ Non-destructive:
 """
 
 import json
+import logging
 import shutil
 import subprocess
 import time
@@ -39,6 +40,10 @@ except ImportError:
     mqtt = None  # MQTT is optional; only used if configured
 
 
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("firestick_minder")
+
+
 # ---------------------------------------------------------------------------
 # ADB HELPERS
 # ---------------------------------------------------------------------------
@@ -51,9 +56,6 @@ def ensure_adb_available() -> None:
     This is primarily a Docker-image sanity check so users get a clean
     error instead of [Errno 2] when adb is missing.
     """
-    from logging import getLogger
-
-    logger = getLogger("firestick_minder.adb_check")
     adb_path = shutil.which("adb")
 
     if not adb_path:
@@ -148,6 +150,77 @@ def _check_unauthorized(proc: subprocess.CompletedProcess, device_name: str, con
         )
         return True
     return False
+
+
+def _parse_pm_list_packages(raw: str) -> List[str]:
+    packages: List[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("package:"):
+            line = line[len("package:") :].strip()
+        if line:
+            packages.append(line)
+
+    packages.sort()
+    return packages
+
+
+def discover_installed_packages(
+    device: Dict[str, Any], alias: str, logger_obj: logging.Logger
+) -> None:
+    """
+    Run 'pm list packages' on the device and log installed package names.
+
+    Best-effort; never raises.
+    """
+
+    try:
+        proc = adb(device, "shell", "pm", "list", "packages", timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        logger_obj.warning(
+            "[discover:%s] failed to list packages via 'pm list packages': %s",
+            alias,
+            exc,
+        )
+        return
+
+    if proc is None:
+        logger_obj.warning(
+            "[discover:%s] no adb result from 'pm list packages'", alias
+        )
+        return
+
+    if _check_unauthorized(proc, alias, "package discovery"):
+        logger_obj.warning(
+            "[discover:%s] unauthorized for 'pm list packages'", alias
+        )
+        return
+
+    if proc.returncode != 0:
+        logger_obj.warning(
+            "[discover:%s] 'pm list packages' failed (rc=%s): %s",
+            alias,
+            proc.returncode,
+            (proc.stderr or proc.stdout or "").strip(),
+        )
+        return
+
+    raw = proc.stdout or ""
+    if not raw:
+        logger_obj.info("[discover:%s] no output from 'pm list packages'", alias)
+        return
+
+    packages = _parse_pm_list_packages(raw)
+    if not packages:
+        logger_obj.info("[discover:%s] no packages returned from 'pm list packages'", alias)
+        return
+
+    logger_obj.info("[discover:%s] installed packages (%d):", alias, len(packages))
+    for pkg in packages:
+        logger_obj.info("[discover:%s]   %s", alias, pkg)
+    logger_obj.info("[discover:%s] end installed packages", alias)
 
 
 def get_foreground_package(device: Dict[str, Any]) -> Optional[str]:
@@ -426,6 +499,8 @@ def main_loop() -> None:
             f"(source: {sources.get('mqtt', 'default')})"
         )
 
+    discovery_logged: set[str] = set()
+
     while True:
         loop_started = time.time()
         try:
@@ -445,6 +520,10 @@ def main_loop() -> None:
                     # If we can't connect right now, skip this device for this tick.
                     print(f"[{name}] Not connected; will retry on next tick.")
                     continue
+
+                if name not in discovery_logged:
+                    discover_installed_packages(device, name, logger)
+                    discovery_logged.add(name)
 
                 foreground_pkg = get_foreground_package(device)
                 media_playing = is_media_playing(device)
